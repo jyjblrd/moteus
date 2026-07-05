@@ -32,11 +32,12 @@ namespace moteus {
 /// `mcout` (aux1 is preferred if both are configured).  When
 /// `mcout.enable` is set and ArduPilot commands output (armed,
 /// interlock on, no emergency stop, fresh packets), this subsystem
-/// sends a position-mode command each millisecond consisting of a
-/// throttle-derived base torque plus an angle-synchronous cyclic
-/// torque whose amplitude and phase follow the roll/pitch command
-/// vector.  See fw/flight_control_structs.h for the mapping and
-/// docs/guides/ardupilot-mcout.md for the integration guide.
+/// sends a position-mode command for each newly received frame (up
+/// to 400Hz) consisting of a throttle-derived base torque plus an
+/// angle-synchronous cyclic torque whose amplitude and phase follow
+/// the roll/pitch command vector.  See fw/flight_control_structs.h
+/// for the mapping and docs/guides/ardupilot-mcout.md for the
+/// integration guide.
 class FlightControl {
  public:
   FlightControl(mjlib::micro::PersistentConfig* persistent_config,

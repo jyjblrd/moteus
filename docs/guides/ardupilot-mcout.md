@@ -24,7 +24,7 @@ ArduPilot (attitude control, arming, MCOUT @ up to 400Hz, 921600 baud)
 AuxPort (uart.mode = mcout) -> McoutReceiver (DMA + frame parser)
    |
    v
-FlightControl (mcout.* config: gating, throttle/roll/pitch mapping) @ 1kHz
+FlightControl (mcout.* config: gating, mapping), one command per frame
    |
    v
 BldcServo position mode command (feedforward + cyclic torque terms)
@@ -86,7 +86,9 @@ conf set mcout.throttle_max_torque_Nm 1.5
 conf set mcout.idle_torque_Nm 0.05
 conf set mcout.cyclic_max_torque_Nm 0.8
 conf set mcout.cyclic_phase_offset 0.0
+conf set mcout.max_torque_Nm 2.0     # default 0 leaves the servo torqueless
 conf set mcout.timeout_s 0.1
+conf set mcout.watchdog_timeout_s 0.1
 conf set mcout.enable 1
 
 conf write
@@ -113,13 +115,16 @@ A pure +pitch command gives phase 0; a pure +roll command gives phase
 propeller's zero, and rotor phase lag is tuned with
 `mcout.cyclic_phase_offset` together with `servo.cyclic.zero_angle`.
 
-Each millisecond while engaged, FlightControl sends a position mode
-command with `position` NaN, `feedforward_Nm = base_Nm`, the cyclic
-amplitude/phase above, and the configured `kp_scale`/`kd_scale`
-/`velocity` (zero by default, i.e. pure feedforward torque).  The
-servo evaluates the cyclic sine at the PWM control rate directly from
-the encoder angle, so the torque profile stays phase locked even
-between flight controller updates.
+For each newly received frame while engaged (up to 400Hz),
+FlightControl sends a position mode command with `position` NaN,
+`feedforward_Nm = base_Nm`, the cyclic amplitude/phase above, the
+torque limit from `mcout.max_torque_Nm` (default 0 — the servo stays
+torqueless until it is configured), a watchdog of
+`mcout.watchdog_timeout_s`, and the configured
+`kp_scale`/`kd_scale`/`velocity` (zero by default, i.e. pure
+feedforward torque).  The servo evaluates the cyclic sine at the PWM
+control rate directly from the encoder angle, so the torque profile
+stays phase locked between flight controller updates.
 
 ## Safety gating
 
@@ -131,6 +136,9 @@ when all of the following hold:
 * the packet flags contain MOTORS_ARMED, SOFT_ARMED, INTERLOCK and
   OUTPUT_ENABLED, and
 * EMERGENCY_STOP is clear.
+
+The flag rules are the defaults of `mcout.required_flags` /
+`mcout.disallow_flags` and can be adjusted for bench setups.
 
 When any of these stops holding — disarm, interlock, emergency stop,
 stale or lost link — a single stop command is sent (motor driver

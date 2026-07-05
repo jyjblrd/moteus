@@ -60,21 +60,38 @@ struct FlightControlConfig {
   float cyclic_phase_offset = 0.0f;
 
   // The servo is stopped when the newest valid packet is older than
-  // this many seconds.  Also used as the servo-side watchdog for
-  // each forwarded command.
+  // this many seconds.
   float timeout_s = 0.1f;
 
-  // Per-command torque limit forwarded to the servo.  NaN uses the
-  // BldcServoCommandData default.
-  float max_torque_Nm = std::numeric_limits<float>::quiet_NaN();
+  // Servo-side watchdog applied to each forwarded command; it is the
+  // backstop if this subsystem itself stops running.
+  float watchdog_timeout_s = 0.1f;
+
+  // Per-command torque limit forwarded to the servo.  The default of
+  // 0 keeps the servo torqueless until deliberately configured.
+  float max_torque_Nm = 0.0f;
+
+  // MCOUT flag bits which must all be present, and which must all be
+  // absent, for output to engage.  The defaults implement the MCOUT
+  // receiver requirements; loosen or tighten only with care.
+  uint16_t required_flags =
+      mcout::Frame::kMotorsArmed |
+      mcout::Frame::kSoftArmed |
+      mcout::Frame::kInterlock |
+      mcout::Frame::kOutputEnabled;
+  uint16_t disallow_flags = mcout::Frame::kEmergencyStop;
 
   // Optional closed-loop terms, mirroring the position-mode command
-  // scales.  The defaults give pure feedforward torque control.  A
-  // nonzero kd_scale adds velocity damping about `velocity`, which
-  // matches the bench-test regime used during development.
+  // scales and limits.  The defaults give pure feedforward torque
+  // control.  A nonzero kd_scale adds velocity damping about
+  // `velocity`, which matches the bench-test regime used during
+  // development.
   float kp_scale = 0.0f;
   float kd_scale = 0.0f;
+  float ilimit_scale = 1.0f;
   float velocity = 0.0f;
+  float accel_limit = std::numeric_limits<float>::quiet_NaN();
+  float velocity_limit = std::numeric_limits<float>::quiet_NaN();
 
   template <typename Archive>
   void Serialize(Archive* a) {
@@ -84,10 +101,16 @@ struct FlightControlConfig {
     a->Visit(MJ_NVP(cyclic_max_torque_Nm));
     a->Visit(MJ_NVP(cyclic_phase_offset));
     a->Visit(MJ_NVP(timeout_s));
+    a->Visit(MJ_NVP(watchdog_timeout_s));
     a->Visit(MJ_NVP(max_torque_Nm));
+    a->Visit(MJ_NVP(required_flags));
+    a->Visit(MJ_NVP(disallow_flags));
     a->Visit(MJ_NVP(kp_scale));
     a->Visit(MJ_NVP(kd_scale));
+    a->Visit(MJ_NVP(ilimit_scale));
     a->Visit(MJ_NVP(velocity));
+    a->Visit(MJ_NVP(accel_limit));
+    a->Visit(MJ_NVP(velocity_limit));
   }
 };
 
@@ -238,6 +261,9 @@ class FlightControlLogic {
   /// @p have_frame        at least one valid frame was ever received
   /// @p frame             the newest valid frame (ignored if !have_frame)
   /// @p frame_age_s       age of that frame in seconds
+  /// @p frame_count       monotonic count of valid frames received;
+  ///                      while engaged, a new command is emitted
+  ///                      only when this advances
   /// @p servo_faulted     the servo is currently in the fault state
   ///
   /// Only the state/gate/mapping fields of @p status are written
@@ -246,6 +272,7 @@ class FlightControlLogic {
                 bool have_frame,
                 const mcout::Frame& frame,
                 float frame_age_s,
+                uint32_t frame_count,
                 bool servo_faulted,
                 const FlightControlConfig& config,
                 FlightControlStatus* status) {
@@ -263,7 +290,10 @@ class FlightControlLogic {
     if (!fresh) {
       return Disengage(kFlightNoLink, status);
     }
-    if (!frame.output_allowed()) {
+    const bool flags_allow =
+        ((frame.flags & config.required_flags) == config.required_flags) &&
+        ((frame.flags & config.disallow_flags) == 0);
+    if (!flags_allow) {
       return Disengage(kFlightStandby, status);
     }
 
@@ -286,6 +316,14 @@ class FlightControlLogic {
     status->state = kFlightActive;
     status->output_active = true;
 
+    if (have_commanded_ && frame_count == last_frame_count_) {
+      // No new data since the last command.  The servo-side watchdog
+      // covers us until the next frame or the staleness gate trips.
+      return Result();
+    }
+    have_commanded_ = true;
+    last_frame_count_ = frame_count;
+
     const Setpoint setpoint = Map(frame, config);
     status->base_torque_Nm = setpoint.base_torque_Nm;
     status->cyclic_torque_Nm = setpoint.cyclic_torque_Nm;
@@ -297,14 +335,15 @@ class FlightControlLogic {
     command.velocity = config.velocity;
     command.kp_scale = config.kp_scale;
     command.kd_scale = config.kd_scale;
+    command.ilimit_scale = config.ilimit_scale;
+    command.accel_limit = config.accel_limit;
+    command.velocity_limit = config.velocity_limit;
     command.feedforward_Nm = setpoint.base_torque_Nm;
     command.cyclic_torque_Nm = setpoint.cyclic_torque_Nm;
     command.cyclic_phase = setpoint.cyclic_phase;
-    if (!std::isnan(config.max_torque_Nm)) {
-      command.max_torque_Nm = config.max_torque_Nm;
-    }
+    command.max_torque_Nm = config.max_torque_Nm;
     command.timeout_s =
-        (config.timeout_s > 0.0f) ? config.timeout_s : 0.0f;
+        (config.watchdog_timeout_s > 0.0f) ? config.watchdog_timeout_s : 0.0f;
 
     result.action = Result::kCommand;
     return result;
@@ -324,6 +363,7 @@ class FlightControlLogic {
   Result Disengage(FlightControlState state, FlightControlStatus* status) {
     status->state = state;
     status->output_active = false;
+    have_commanded_ = false;
 
     Result result;
     if (engaged_) {
@@ -335,6 +375,8 @@ class FlightControlLogic {
   }
 
   bool engaged_ = false;
+  bool have_commanded_ = false;
+  uint32_t last_frame_count_ = 0;
 };
 
 }  // namespace moteus

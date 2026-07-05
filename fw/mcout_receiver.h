@@ -15,6 +15,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 
 #include "mjlib/base/string_span.h"
 
@@ -25,17 +26,20 @@
 namespace moteus {
 
 /// Owns the receive side of an AUX UART configured in `mcout` mode:
-/// continuously drains the DMA stream through the MCOUT parser and
-/// retains the most recent valid frame.
+/// drains the DMA stream through the MCOUT parser and retains the
+/// most recent valid frame.  Poll() must be called from the main
+/// loop, like the aux tunnel path.
 ///
-/// Poll() must be called from the main loop, like the aux tunnel
-/// path.  At the default 921600 baud the receive buffer holds ~2ms
-/// of line data, far longer than a main loop iteration.
+/// DMA runs continuously into the buffer while bytes are consumed
+/// behind it, so there is no stop/restart gap in normal operation.
+/// When the buffer fills, the re-arm path first consumes the
+/// unprocessed tail and then recovers any bytes that arrive while
+/// DMA is disarmed directly from the UART receive register.
 class McoutReceiver {
  public:
   McoutReceiver(Stm32G4DmaUart* uart, MillisecondTimer* timer)
       : uart_(uart), timer_(timer) {
-    uart_->start_dma_read(rx_span());
+    Rearm();
   }
 
   ~McoutReceiver() {
@@ -43,20 +47,17 @@ class McoutReceiver {
   }
 
   void Poll() {
-    if (uart_->read_bytes_remaining() ==
-        static_cast<int>(buffer_.size())) {
-      return;
+    // Consume whatever DMA has delivered so far, without stopping it.
+    ProcessTo(buffer_.size() -
+              static_cast<size_t>(uart_->read_bytes_remaining()));
+
+    if (uart_->is_dma_read_finished()) {
+      // The buffer filled.  Stop DMA, consume any tail bytes that
+      // landed after the snapshot above, then re-arm.
+      uart_->finish_dma_read();
+      ProcessTo(buffer_.size());
+      Rearm();
     }
-    uart_->finish_dma_read();
-    const int size =
-        static_cast<int>(buffer_.size()) - uart_->read_bytes_remaining();
-    for (int i = 0; i < size; i++) {
-      if (parser_.Feed(static_cast<uint8_t>(buffer_[i]), &frame_)) {
-        last_frame_ms_ = timer_->read_ms();
-        have_frame_ = true;
-      }
-    }
-    uart_->start_dma_read(rx_span());
   }
 
   bool have_frame() const { return have_frame_; }
@@ -65,9 +66,35 @@ class McoutReceiver {
   uint32_t last_frame_ms() const { return last_frame_ms_; }
 
  private:
-  mjlib::base::string_span rx_span() {
-    return mjlib::base::string_span(
-        buffer_.data(), buffer_.data() + buffer_.size());
+  void ProcessTo(size_t end) {
+    while (processed_ < end) {
+      Feed(buffer_[processed_++]);
+    }
+  }
+
+  void Feed(uint8_t byte) {
+    if (parser_.Feed(byte, &frame_)) {
+      last_frame_ms_ = timer_->read_ms();
+      have_frame_ = true;
+    }
+  }
+
+  void Rearm() {
+    auto* const uart = uart_->uart();
+
+    // Clear any stale receive errors and consume bytes that arrived
+    // while DMA was not armed.
+    uart->ICR =
+        USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NECF | USART_ICR_PECF;
+    while ((uart->ISR & USART_ISR_RXNE) != 0) {
+      Feed(static_cast<uint8_t>(uart->RDR));
+    }
+
+    processed_ = 0;
+    uart_->start_dma_read(
+        mjlib::base::string_span(
+            reinterpret_cast<char*>(buffer_.data()),
+            reinterpret_cast<char*>(buffer_.data()) + buffer_.size()));
   }
 
   Stm32G4DmaUart* const uart_;
@@ -78,7 +105,11 @@ class McoutReceiver {
   bool have_frame_ = false;
   uint32_t last_frame_ms_ = 0;
 
-  std::array<char, 192> buffer_ = {};
+  // At 921600 baud this holds ~2.8ms of line data; the main loop
+  // polls far more often than that, so in practice the buffer-full
+  // re-arm path only runs at startup or after a stall.
+  std::array<uint8_t, 256> buffer_ = {};
+  size_t processed_ = 0;
 };
 
 }  // namespace moteus

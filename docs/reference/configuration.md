@@ -712,18 +712,30 @@ for phase lag in the rotor response.
 ## `mcout.timeout_s`
 
 The servo is stopped when the newest valid packet is older than this
-many seconds.  Also used as the servo-side watchdog timeout for each
-forwarded command.
+many seconds.
+
+## `mcout.watchdog_timeout_s`
+
+Servo-side watchdog applied to each forwarded command.  It is the
+backstop in case the MCOUT bridge itself stops running.
 
 ## `mcout.max_torque_Nm`
 
-Per-command torque limit forwarded to the servo.  NaN uses the
-regular command default.
+Per-command torque limit forwarded to the servo.  The default of 0
+keeps the servo torqueless until this is deliberately configured.
 
-## `mcout.kp_scale` / `mcout.kd_scale` / `mcout.velocity`
+## `mcout.required_flags` / `mcout.disallow_flags`
+
+Bitmasks of MCOUT flag bits which must all be present, respectively
+all be absent, for output to engage.  The defaults (0x0047 and
+0x0008) implement the MCOUT receiver requirements: MOTORS_ARMED,
+SOFT_ARMED, INTERLOCK and OUTPUT_ENABLED required, EMERGENCY_STOP
+disallowed.  Loosen these only for bench setups.
+
+## `mcout.kp_scale` / `mcout.kd_scale` / `mcout.ilimit_scale` / `mcout.velocity` / `mcout.accel_limit` / `mcout.velocity_limit`
 
 Optional closed loop terms mirroring the position mode command
-scales.  The defaults (all zero) give pure feedforward torque
+scales and limits.  The defaults give pure feedforward torque
 control.  A nonzero `kd_scale` adds velocity damping about
 `velocity`, which matches the bench-test regime used during
 development.

@@ -46,9 +46,33 @@ FlightControlConfig MakeConfig() {
   config.throttle_max_torque_Nm = 2.0f;
   config.idle_torque_Nm = 0.1f;
   config.cyclic_max_torque_Nm = 1.0f;
+  config.max_torque_Nm = 3.0f;
   config.timeout_s = 0.1f;
+  config.watchdog_timeout_s = 0.05f;
   return config;
 }
+
+// Drives Update() with a frame counter that advances on every call,
+// mimicking a healthy 400Hz stream.
+struct Harness {
+  FlightControlLogic dut;
+  FlightControlStatus status;
+  uint32_t frame_count = 0;
+
+  Result Fresh(const mcout::Frame& frame,
+               const FlightControlConfig& config,
+               bool servo_faulted = false) {
+    return dut.Update(true, true, frame, 0.01f, ++frame_count,
+                      servo_faulted, config, &status);
+  }
+
+  Result Stale(const mcout::Frame& frame,
+               const FlightControlConfig& config,
+               float age_s) {
+    return dut.Update(true, true, frame, age_s, frame_count,
+                      false, config, &status);
+  }
+};
 
 }  // namespace
 
@@ -161,48 +185,47 @@ BOOST_AUTO_TEST_CASE(FlightMapClampsAndSanitizes) {
 }
 
 BOOST_AUTO_TEST_CASE(FlightGating) {
-  FlightControlLogic dut;
-  FlightControlStatus status;
+  Harness harness;
   auto config = MakeConfig();
   const auto armed = MakeArmedFrame();
 
   {
     // Disabled: nothing happens.
     config.enable = false;
-    const auto result = dut.Update(
-        true, true, armed, 0.01f, false, config, &status);
+    const auto result = harness.Fresh(armed, config);
     BOOST_TEST(result.action == Result::kNone);
-    BOOST_TEST(status.state == kFlightDisabled);
-    BOOST_TEST(status.output_active == false);
+    BOOST_TEST(harness.status.state == kFlightDisabled);
+    BOOST_TEST(harness.status.output_active == false);
     config.enable = true;
   }
 
   {
     // No receiver configured: disabled.
-    const auto result = dut.Update(
-        false, true, armed, 0.01f, false, config, &status);
+    const auto result = harness.dut.Update(
+        false, true, armed, 0.01f, ++harness.frame_count,
+        false, config, &harness.status);
     BOOST_TEST(result.action == Result::kNone);
-    BOOST_TEST(status.state == kFlightDisabled);
+    BOOST_TEST(harness.status.state == kFlightDisabled);
   }
 
   {
     // No frame yet: no link.
-    const auto result = dut.Update(
-        true, false, armed, kInf, false, config, &status);
+    const auto result = harness.dut.Update(
+        true, false, armed, kInf, 0,
+        false, config, &harness.status);
     BOOST_TEST(result.action == Result::kNone);
-    BOOST_TEST(status.state == kFlightNoLink);
-    BOOST_TEST(status.link_up == false);
+    BOOST_TEST(harness.status.state == kFlightNoLink);
+    BOOST_TEST(harness.status.link_up == false);
   }
 
   {
     // Fresh but disarmed: standby, still nothing sent.
     mcout::Frame disarmed = armed;
     disarmed.flags = 0;
-    const auto result = dut.Update(
-        true, true, disarmed, 0.01f, false, config, &status);
+    const auto result = harness.Fresh(disarmed, config);
     BOOST_TEST(result.action == Result::kNone);
-    BOOST_TEST(status.state == kFlightStandby);
-    BOOST_TEST(status.link_up == true);
+    BOOST_TEST(harness.status.state == kFlightStandby);
+    BOOST_TEST(harness.status.link_up == true);
   }
 
   {
@@ -210,11 +233,10 @@ BOOST_AUTO_TEST_CASE(FlightGating) {
     mcout::Frame commanding = armed;
     commanding.roll = 0.6f;
     commanding.pitch = 0.8f;
-    const auto result = dut.Update(
-        true, true, commanding, 0.01f, false, config, &status);
+    const auto result = harness.Fresh(commanding, config);
     BOOST_TEST(result.action == Result::kCommand);
-    BOOST_TEST(status.state == kFlightActive);
-    BOOST_TEST(status.output_active == true);
+    BOOST_TEST(harness.status.state == kFlightActive);
+    BOOST_TEST(harness.status.output_active == true);
 
     const auto& command = result.command;
     BOOST_TEST(command.mode == kPosition);
@@ -222,36 +244,36 @@ BOOST_AUTO_TEST_CASE(FlightGating) {
     BOOST_TEST(command.velocity == 0.0f);
     BOOST_TEST(command.kp_scale == 0.0f);
     BOOST_TEST(command.kd_scale == 0.0f);
+    BOOST_TEST(command.ilimit_scale == 1.0f);
+    BOOST_TEST(std::isnan(command.accel_limit));
+    BOOST_TEST(std::isnan(command.velocity_limit));
     BOOST_TEST(command.feedforward_Nm == 1.0f, tt::tolerance(1e-6f));
     BOOST_TEST(command.cyclic_torque_Nm == 1.0f, tt::tolerance(1e-6f));
     BOOST_TEST(command.cyclic_phase == 0.10242f, tt::tolerance(1e-4f));
-    BOOST_TEST(command.timeout_s == 0.1f, tt::tolerance(1e-6f));
-    // Default per-command torque limit remains untouched when the
-    // config value is NaN.
-    BOOST_TEST(command.max_torque_Nm == 100.0f);
+    // The forwarded torque limit and the servo-side watchdog come
+    // from their dedicated config values.
+    BOOST_TEST(command.max_torque_Nm == 3.0f);
+    BOOST_TEST(command.timeout_s == 0.05f, tt::tolerance(1e-6f));
 
-    BOOST_TEST(status.base_torque_Nm == 1.0f, tt::tolerance(1e-6f));
-    BOOST_TEST(status.cyclic_torque_Nm == 1.0f, tt::tolerance(1e-6f));
+    BOOST_TEST(harness.status.base_torque_Nm == 1.0f, tt::tolerance(1e-6f));
+    BOOST_TEST(harness.status.cyclic_torque_Nm == 1.0f, tt::tolerance(1e-6f));
   }
 
   {
     // Stale link while engaged: exactly one stop, then silence.
-    const auto first = dut.Update(
-        true, true, armed, 0.5f, false, config, &status);
+    const auto first = harness.Stale(armed, config, 0.5f);
     BOOST_TEST(first.action == Result::kStop);
     BOOST_TEST(first.command.mode == kStopped);
-    BOOST_TEST(status.state == kFlightNoLink);
-    BOOST_TEST(status.output_active == false);
+    BOOST_TEST(harness.status.state == kFlightNoLink);
+    BOOST_TEST(harness.status.output_active == false);
 
-    const auto second = dut.Update(
-        true, true, armed, 0.6f, false, config, &status);
+    const auto second = harness.Stale(armed, config, 0.6f);
     BOOST_TEST(second.action == Result::kNone);
   }
 
   {
     // Fresh again: re-engages.
-    const auto result = dut.Update(
-        true, true, armed, 0.01f, false, config, &status);
+    const auto result = harness.Fresh(armed, config);
     BOOST_TEST(result.action == Result::kCommand);
   }
 
@@ -259,60 +281,122 @@ BOOST_AUTO_TEST_CASE(FlightGating) {
     // Emergency stop flag: one stop, then silence.
     mcout::Frame estop = armed;
     estop.flags = armed.flags | mcout::Frame::kEmergencyStop;
-    const auto first = dut.Update(
-        true, true, estop, 0.01f, false, config, &status);
+    const auto first = harness.Fresh(estop, config);
     BOOST_TEST(first.action == Result::kStop);
-    BOOST_TEST(status.state == kFlightStandby);
+    BOOST_TEST(harness.status.state == kFlightStandby);
 
-    const auto second = dut.Update(
-        true, true, estop, 0.01f, false, config, &status);
+    const auto second = harness.Fresh(estop, config);
     BOOST_TEST(second.action == Result::kNone);
   }
 
   {
-    // Configured torque limit propagates.
-    config.max_torque_Nm = 5.0f;
-    const auto result = dut.Update(
-        true, true, armed, 0.01f, false, config, &status);
+    // An unconfigured torque limit (default 0) is forwarded as-is,
+    // leaving the servo torqueless until deliberately configured.
+    auto zero_config = config;
+    zero_config.max_torque_Nm = 0.0f;
+    const auto result = harness.Fresh(armed, zero_config);
     BOOST_TEST(result.action == Result::kCommand);
-    BOOST_TEST(result.command.max_torque_Nm == 5.0f);
-    config.max_torque_Nm = NaN;
+    BOOST_TEST(result.command.max_torque_Nm == 0.0f);
   }
 
   {
     // Disabling while engaged emits a final stop.
     config.enable = false;
-    const auto result = dut.Update(
-        true, true, armed, 0.01f, false, config, &status);
+    const auto result = harness.Fresh(armed, config);
     BOOST_TEST(result.action == Result::kStop);
-    BOOST_TEST(status.state == kFlightDisabled);
+    BOOST_TEST(harness.status.state == kFlightDisabled);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(FlightEdgeTriggeredCommands) {
+  Harness harness;
+  const auto config = MakeConfig();
+  const auto armed = MakeArmedFrame();
+
+  // The first fresh armed frame engages and commands.
+  BOOST_TEST(harness.Fresh(armed, config).action == Result::kCommand);
+
+  // Re-running with the same frame count sends nothing new; the
+  // servo-side watchdog covers the gap.
+  const auto repeat = harness.dut.Update(
+      true, true, armed, 0.011f, harness.frame_count,
+      false, config, &harness.status);
+  BOOST_TEST(repeat.action == Result::kNone);
+  BOOST_TEST(harness.status.state == kFlightActive);
+  BOOST_TEST(harness.status.output_active == true);
+
+  // A new frame produces a new command.
+  BOOST_TEST(harness.Fresh(armed, config).action == Result::kCommand);
+
+  // After a disengage/re-engage cycle, the first frame always
+  // commands even if the counter did not advance in between.
+  BOOST_TEST(harness.Stale(armed, config, 1.0f).action == Result::kStop);
+  const auto reengage = harness.dut.Update(
+      true, true, armed, 0.01f, harness.frame_count,
+      false, config, &harness.status);
+  BOOST_TEST(reengage.action == Result::kCommand);
+}
+
+BOOST_AUTO_TEST_CASE(FlightFlagMasks) {
+  Harness harness;
+  auto config = MakeConfig();
+  const auto armed = MakeArmedFrame();
+
+  {
+    // Default masks: any missing required flag denies output.
+    mcout::Frame no_interlock = armed;
+    no_interlock.flags = armed.flags & ~mcout::Frame::kInterlock;
+    BOOST_TEST(harness.Fresh(no_interlock, config).action == Result::kNone);
+    BOOST_TEST(harness.status.state == kFlightStandby);
+  }
+
+  {
+    // Loosened mask: an interlock-less bench setup can engage.
+    auto bench_config = config;
+    bench_config.required_flags =
+        mcout::Frame::kMotorsArmed | mcout::Frame::kOutputEnabled;
+    mcout::Frame no_interlock = armed;
+    no_interlock.flags = armed.flags & ~mcout::Frame::kInterlock;
+    BOOST_TEST(harness.Fresh(no_interlock, bench_config).action ==
+               Result::kCommand);
+    // Restore a disengaged state for the next block.
+    harness.Stale(no_interlock, bench_config, 1.0f);
+  }
+
+  {
+    // Tightened disallow mask: spool-up block now denies output.
+    auto strict_config = config;
+    strict_config.disallow_flags =
+        mcout::Frame::kEmergencyStop | mcout::Frame::kSpoolupBlock;
+    mcout::Frame blocked = armed;
+    blocked.flags = armed.flags | mcout::Frame::kSpoolupBlock;
+    BOOST_TEST(harness.Fresh(blocked, strict_config).action == Result::kNone);
+    BOOST_TEST(harness.status.state == kFlightStandby);
+
+    BOOST_TEST(harness.Fresh(armed, strict_config).action == Result::kCommand);
   }
 }
 
 BOOST_AUTO_TEST_CASE(FlightFaultClearOnEngage) {
-  FlightControlLogic dut;
-  FlightControlStatus status;
+  Harness harness;
   const auto config = MakeConfig();
   const auto armed = MakeArmedFrame();
 
   // ArduPilot commands output while the servo is latched in a fault:
   // the first action is a stop (which clears the fault), engagement
   // follows on the next update.
-  const auto first = dut.Update(
-      true, true, armed, 0.01f, true, config, &status);
+  const auto first = harness.Fresh(armed, config, true);
   BOOST_TEST(first.action == Result::kStop);
-  BOOST_TEST(status.state == kFlightStandby);
-  BOOST_TEST(status.output_active == false);
+  BOOST_TEST(harness.status.state == kFlightStandby);
+  BOOST_TEST(harness.status.output_active == false);
 
-  const auto second = dut.Update(
-      true, true, armed, 0.01f, false, config, &status);
+  const auto second = harness.Fresh(armed, config, false);
   BOOST_TEST(second.action == Result::kCommand);
-  BOOST_TEST(status.state == kFlightActive);
+  BOOST_TEST(harness.status.state == kFlightActive);
 
   // While already engaged, a servo fault does not trigger the
   // clearing behavior; commands continue and the servo ignores them
   // until the operator intervenes or ArduPilot disarms and re-arms.
-  const auto third = dut.Update(
-      true, true, armed, 0.01f, true, config, &status);
+  const auto third = harness.Fresh(armed, config, true);
   BOOST_TEST(third.action == Result::kCommand);
 }

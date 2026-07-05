@@ -77,7 +77,7 @@ void FlightControl::PollMillisecond() {
 
   const auto result = logic_.Update(
       receiver != nullptr, have_frame, frame, frame_age_s,
-      servo_faulted, config_, &status_);
+      status_.valid_frames, servo_faulted, config_, &status_);
 
   switch (result.action) {
     case FlightControlLogic::Result::kNone: {
