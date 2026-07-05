@@ -109,6 +109,33 @@ modulo one revolution.  The selected AUX pin must also be configured as
 * `pulse_us` - The pulse width in microseconds.
 * `angle` - The trigger angle in output revolutions, modulo one turn.
 
+## `servo.cyclic`
+
+Parameters of the angle-synchronous "cyclic" torque support.  When a
+position mode command carries a nonzero cyclic torque amplitude, the
+firmware adds:
+
+```
+cyclic_torque_Nm * sin(2 * pi * (harmonic *
+    (output_position - zero_angle) + cyclic_phase))
+```
+
+to the feedforward torque at every control cycle, phase locked to the
+measured output position.  This implements swashplateless /
+underactuated propeller control, where thrust is vectored by
+accelerating and decelerating the rotor within each revolution.
+
+* `harmonic` - Sine cycles per output revolution (default 1).
+* `zero_angle` - The output angle in revolutions, modulo one turn,
+  from which the cyclic phase is measured.  Same convention as
+  `servo.zero_angle_trigger.angle`.
+
+The cyclic amplitude and phase are per-command values, settable from
+the diagnostic protocol using the `y` (amplitude in Nm) and `h`
+(phase in cycles) options of `d pos`, or continuously by the MCOUT
+flight-controller input (see the `mcout` group and
+[the ArduPilot MCOUT guide](../guides/ardupilot-mcout.md)).
+
 ## `servo.voltage_mode_control`
 
 When set to non-zero, the current control loop is not closed, and all
@@ -438,10 +465,17 @@ The type of UART device.
 * 3 - Per-control cycle debug information (undocumented)
 * 4 - CUI AMT21x series RS422
 * 5 - fdcanusb serial protocol
+* 6 - Board default
+* 7 - ArduPilot AP_MotorControlOutput ("MCOUT") receive stream
 
 When the tunnel mode is selected, data may be sent or received using
 the CAN diagnostic protocol.  For aux1, use diagnostic channel 2.  For
 aux2, use diagnostic channel 3.
+
+When the mcout mode is selected, the port receives the binary packet
+stream published by an ArduPilot flight controller and the `mcout`
+configuration group controls how those commands drive the servo.  See
+[the ArduPilot MCOUT guide](../guides/ardupilot-mcout.md).
 
 ## `aux[12].uart.baud_rate`
 
@@ -632,3 +666,64 @@ non-reducing ratio, this can be set to true/non-zero.  Otherwise, a
 ratio of greater than 1.0 will cause a fault.  This should only be
 used if the system has a gearbox which is not a reducer, but speeds up
 the output.
+
+# `mcout`
+
+Controls how an ArduPilot AP_MotorControlOutput ("MCOUT") stream,
+received on an AUX UART configured with `aux[12].uart.mode` = 7,
+drives the servo.  See [the ArduPilot MCOUT
+guide](../guides/ardupilot-mcout.md) for wiring, the safety gating
+rules, and a worked configuration example.
+
+## `mcout.enable`
+
+Master enable.  When zero, the MCOUT stream is still parsed and
+reported in the `mcout` telemetry channel, but the servo is never
+commanded.
+
+## `mcout.throttle_max_torque_Nm`
+
+The base (collective) torque in Nm applied at full throttle.  The
+commanded base torque is the normalized throttle multiplied by this
+value.
+
+## `mcout.idle_torque_Nm`
+
+The minimum base torque in Nm while output is engaged, for example to
+keep a propeller turning at ground idle when ArduPilot commands zero
+throttle.
+
+## `mcout.cyclic_max_torque_Nm`
+
+The cyclic torque amplitude in Nm for a unit magnitude roll/pitch
+command.  The commanded amplitude is:
+
+```
+min(1, sqrt(roll^2 + pitch^2)) * cyclic_max_torque_Nm
+```
+
+## `mcout.cyclic_phase_offset`
+
+Added to the commanded cyclic phase, in cycles.  Use this together
+with `servo.cyclic.zero_angle` to align the flight controller's
+roll/pitch frame with the propeller's physical zero and to compensate
+for phase lag in the rotor response.
+
+## `mcout.timeout_s`
+
+The servo is stopped when the newest valid packet is older than this
+many seconds.  Also used as the servo-side watchdog timeout for each
+forwarded command.
+
+## `mcout.max_torque_Nm`
+
+Per-command torque limit forwarded to the servo.  NaN uses the
+regular command default.
+
+## `mcout.kp_scale` / `mcout.kd_scale` / `mcout.velocity`
+
+Optional closed loop terms mirroring the position mode command
+scales.  The defaults (all zero) give pure feedforward torque
+control.  A nonzero `kd_scale` adds velocity damping about
+`velocity`, which matches the bench-test regime used during
+development.

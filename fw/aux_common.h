@@ -104,6 +104,11 @@ struct UartEncoder {
       kSerial,   // fdcanusb ASCII protocol for serial control
       kBoardDefault,
 
+      // ArduPilot AP_MotorControlOutput ("MCOUT") receive stream.
+      // Appended after kBoardDefault so that existing stored config
+      // values remain stable.
+      kMcout,
+
       kNumModes,
     };
     Mode mode = kBoardDefault;
@@ -633,6 +638,7 @@ struct IsEnum<moteus::aux::UartEncoder::Config::Mode> {
         { M::kCuiAmt21, "cui_amt21" },
         { M::kSerial, "serial" },
         { M::kBoardDefault, "board_default" },
+        { M::kMcout, "mcout" },
       }};
   }
 };

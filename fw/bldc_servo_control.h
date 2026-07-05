@@ -204,6 +204,11 @@ class BldcServoControl {
   // position data.
   uint8_t isr_motor_position_epoch_ = 0;
 
+  // Precomputed from BldcServoConfig::cyclic by the Impl's
+  // config-update path (or set directly by test fixtures).
+  int64_t cyclic_zero_raw_ = 0;
+  uint32_t cyclic_harmonic_ = 1;
+
   BldcServoControl() {}
 
   /// Process a command, applying defaults and transforming positions.
@@ -250,6 +255,24 @@ class BldcServoControl {
       data->velocity = Limit(data->velocity,
                              -data->velocity_limit,
                              data->velocity_limit);
+    }
+
+    // Sanitize and precompute the cyclic torque terms.  Non-finite
+    // values degrade to "no cyclic" rather than an error so that a
+    // malformed command still results in plain position control.
+    if (!std::isfinite(data->cyclic_torque_Nm) ||
+        !std::isfinite(data->cyclic_phase)) {
+      data->cyclic_torque_Nm = 0.0f;
+      data->cyclic_phase = 0.0f;
+    }
+    if (data->cyclic_torque_Nm != 0.0f) {
+      const float wrapped_phase =
+          data->cyclic_phase - std::floor(data->cyclic_phase);
+      data->cyclic_phase_q31 = static_cast<int32_t>(
+          static_cast<uint32_t>(
+              static_cast<int64_t>(wrapped_phase * 4294967296.0f)));
+    } else {
+      data->cyclic_phase_q31 = 0;
     }
 
     // Transform any position and stop_position command into the
@@ -1123,6 +1146,51 @@ class BldcServoControl {
     }
   }
 
+  // Returns the CORDIC q31 angle argument for the cyclic torque sine
+  // at the given wrapped output position: one output revolution spans
+  // `harmonic` sine cycles, and one full cycle wraps the entire int32
+  // range (matching RadiansToQ31 semantics).
+  static int32_t CyclicAngleQ31(int64_t position_raw,
+                                int64_t zero_raw,
+                                uint32_t harmonic,
+                                int32_t phase_q31) MOTEUS_CCM_ATTRIBUTE {
+    // Wrapped fixed-point subtract, then reduce modulo one revolution
+    // (48 bits) before applying the harmonic so that the multiply
+    // cannot overflow.  All additions are performed unsigned to keep
+    // the intended modular wrap well defined.
+    const uint64_t relative =
+        static_cast<uint64_t>(position_raw) - static_cast<uint64_t>(zero_raw);
+    const uint64_t cycles = (relative & ((1ull << 48) - 1)) * harmonic;
+    return static_cast<int32_t>(
+        static_cast<uint32_t>(cycles >> 16) +
+        static_cast<uint32_t>(phase_q31));
+  }
+
+  // The angle-synchronous torque contribution for kPosition mode.
+  float ISR_CyclicTorque(const CommandData* data) MOTEUS_CCM_ATTRIBUTE {
+    if (data->cyclic_torque_Nm == 0.0f) {
+      self().status_.cyclic_torque_Nm = 0.0f;
+      return 0.0f;
+    }
+    if (!self().position_.position_relative_valid) {
+      // Without a valid position there is no meaningful rotor angle.
+      // (The position mode path faults on an invalid position
+      // regardless.)
+      self().status_.cyclic_torque_Nm = 0.0f;
+      return 0.0f;
+    }
+
+    const int32_t angle_q31 = CyclicAngleQ31(
+        self().position_.position_raw,
+        cyclic_zero_raw_,
+        cyclic_harmonic_,
+        data->cyclic_phase_q31);
+    const SinCos sc = self().cordic(angle_q31);
+    const float result = data->cyclic_torque_Nm * sc.s;
+    self().status_.cyclic_torque_Nm = result;
+    return result;
+  }
+
   void ISR_DoPosition(const SinCos& sin_cos,
                       CommandData* data) MOTEUS_CCM_ATTRIBUTE {
     PID::ApplyOptions apply_options;
@@ -1131,7 +1199,8 @@ class BldcServoControl {
     apply_options.ilimit_scale = data->ilimit_scale;
 
     ISR_DoPositionCommon(sin_cos, data, apply_options, data->max_torque_Nm,
-                         data->feedforward_Nm, data->velocity);
+                         data->feedforward_Nm + ISR_CyclicTorque(data),
+                         data->velocity);
   }
 
   void ISR_DoZeroVelocity(const SinCos& sin_cos,
@@ -1631,6 +1700,7 @@ class BldcServoControl {
     old_q_V_ = self().control_.q_V;
 
     self().control_.Clear();
+    self().status_.cyclic_torque_Nm = 0.0f;
 
     if (!std::isnan(self().status_.timeout_s) && self().status_.timeout_s > 0.0f) {
       self().status_.timeout_s =

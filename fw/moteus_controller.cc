@@ -18,6 +18,7 @@
 
 #include "fw/aux_port.h"
 #include "fw/drv8323.h"
+#include "fw/flight_control.h"
 #include "fw/math.h"
 #include "fw/moteus_hw.h"
 #include "fw/motor_position.h"
@@ -541,6 +542,8 @@ class MoteusController::Impl : public multiplex::MicroServer::Server {
 
             return options;
           }()),
+        flight_control_(persistent_config, telemetry_manager, timer,
+                        &bldc_, &aux1_port_, &aux2_port_),
         clock_manager_(clock_manager),
         system_info_(system_info),
         firmware_(firmware),
@@ -583,6 +586,7 @@ class MoteusController::Impl : public multiplex::MicroServer::Server {
     drv8323_.PollMillisecond();
     bldc_.PollMillisecond();
     motor_position_.PollMillisecond();
+    flight_control_.PollMillisecond();
   }
 
   void StartFrame() override {
@@ -1271,6 +1275,7 @@ class MoteusController::Impl : public multiplex::MicroServer::Server {
   MotorPosition motor_position_;
   Drv8323 drv8323_;
   BldcServo bldc_;
+  FlightControl flight_control_;
   ClockManager* const clock_manager_;
   SystemInfo* const system_info_;
   FirmwareInfo* const firmware_;

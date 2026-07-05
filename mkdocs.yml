@@ -99,6 +99,7 @@ nav:
           - Dual Encoders: guides/dual-encoders.md
           - Optimizing for Maximum Duty Cycle: guides/optimizing-for-max-duty-cycle.md
           - Field Weakening: guides/field-weakening.md
+          - ArduPilot MCOUT Input: guides/ardupilot-mcout.md
 
   - Integration:
       - integration/index.md

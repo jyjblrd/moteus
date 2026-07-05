@@ -111,6 +111,14 @@ bool ParseOptions(BldcServo::CommandData* command, base::Tokenizer* tokenizer,
         command->meas_ind_axis = static_cast<int8_t>(value);
         break;
       }
+      case 'y': {
+        command->cyclic_torque_Nm = value;
+        break;
+      }
+      case 'h': {
+        command->cyclic_phase = value;
+        break;
+      }
       default: {
         return false;
       }
@@ -704,7 +712,7 @@ class BoardDebug::Impl {
       // We default to no timeout for debug commands.
       command.timeout_s = std::numeric_limits<float>::quiet_NaN();
 
-      if (!ParseOptions(&command, &tokenizer, "pdisftavocb")) {
+      if (!ParseOptions(&command, &tokenizer, "pdisftavocbyh")) {
         WriteMessage(response, "ERR unknown option\r\n");
         return;
       }

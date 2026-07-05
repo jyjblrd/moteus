@@ -329,6 +329,11 @@ class BldcServo::Impl : public BldcServoControl<BldcServo::Impl> {
     zero_angle_trigger_position_valid_ = false;
     zero_angle_trigger_pulse_remaining_ = 0;
 
+    // The cyclic torque angle reference shares the zero-angle
+    // trigger's fixed point convention.
+    cyclic_zero_raw_ = ZeroAngleTriggerRaw(config_.cyclic.zero_angle);
+    cyclic_harmonic_ = std::max<uint8_t>(1, config_.cyclic.harmonic);
+
     // Ensure that our maximum current stays within the range that can
     // be sensed.
     constexpr float kSensableCurrentMargin = 0.95f;

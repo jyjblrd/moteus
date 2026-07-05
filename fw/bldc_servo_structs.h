@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 
+#include "mjlib/base/assert.h"
 #include "mjlib/base/visitor.h"
 
 #include "fw/error.h"
@@ -87,6 +88,33 @@ struct ZeroAngleTriggerConfig {
     a->Visit(MJ_NVP(pin));
     a->Visit(MJ_NVP(pulse_us));
     a->Visit(MJ_NVP(angle));
+  }
+};
+
+// Parameters of the angle-synchronous ("cyclic") torque support.
+// When a position mode command carries a nonzero cyclic torque
+// amplitude, the servo adds
+//
+//   cyclic_torque_Nm * sin(2 * pi * (harmonic *
+//       (output_position - zero_angle) + cyclic_phase))
+//
+// to the feedforward torque at every control cycle.  This implements
+// swashplateless / underactuated propeller control, where thrust is
+// vectored by accelerating and decelerating the rotor within each
+// revolution.
+struct CyclicTorqueConfig {
+  // Sine cycles per output revolution.
+  uint8_t harmonic = 1;
+
+  // The output angle in revolutions, modulo one turn, from which the
+  // cyclic phase is measured.  Uses the same convention as
+  // servo.zero_angle_trigger.angle.
+  float zero_angle = 0.0f;
+
+  template <typename Archive>
+  void Serialize(Archive* a) {
+    a->Visit(MJ_NVP(harmonic));
+    a->Visit(MJ_NVP(zero_angle));
   }
 };
 
@@ -225,6 +253,9 @@ struct BldcServoStatus {
 
   float torque_error_Nm = 0.0f;
 
+  // Instantaneous applied cyclic torque (kPosition mode only).
+  float cyclic_torque_Nm = 0.0f;
+
   float sin = 0.0f;
   float cos = 0.0f;
   uint16_t cooldown_count = 0;
@@ -327,6 +358,7 @@ struct BldcServoStatus {
     a->Visit(MJ_NVP(effective_max_current_A));
     a->Visit(MJ_NVP(fw));
     a->Visit(MJ_NVP(torque_error_Nm));
+    a->Visit(MJ_NVP(cyclic_torque_Nm));
 
     a->Visit(MJ_NVP(sin));
     a->Visit(MJ_NVP(cos));
@@ -382,6 +414,14 @@ struct BldcServoCommandData {
 
   float feedforward_Nm = 0.0f;
 
+  // For kPosition mode: amplitude of the angle-synchronous cyclic
+  // torque added to feedforward_Nm each control cycle.  See
+  // CyclicTorqueConfig for the exact formula.  0 disables; non
+  // finite values are treated as 0.
+  float cyclic_torque_Nm = 0.0f;
+  // Phase of the cyclic torque, in cycles.
+  float cyclic_phase = 0.0f;
+
   float kp_scale = 1.0f;
   float kd_scale = 1.0f;
   float ilimit_scale = 1.0f;
@@ -408,6 +448,8 @@ struct BldcServoCommandData {
 
   /////// NOT SERIALIZED
   bool synthetic_theta = false;
+  // Precomputed by PrepareCommand from cyclic_phase.
+  int32_t cyclic_phase_q31 = 0;
 
   template <typename Archive>
   void Serialize(Archive* a) {
@@ -434,6 +476,8 @@ struct BldcServoCommandData {
     a->Visit(MJ_NVP(stop_position));
     a->Visit(MJ_NVP(stop_position_relative_raw));
     a->Visit(MJ_NVP(feedforward_Nm));
+    a->Visit(MJ_NVP(cyclic_torque_Nm));
+    a->Visit(MJ_NVP(cyclic_phase));
     a->Visit(MJ_NVP(kp_scale));
     a->Visit(MJ_NVP(kd_scale));
     a->Visit(MJ_NVP(ilimit_scale));
@@ -654,6 +698,7 @@ struct BldcServoConfig {
 
   FieldWeakeningConfig fw;
   ZeroAngleTriggerConfig zero_angle_trigger;
+  CyclicTorqueConfig cyclic;
 
   float max_current_A =
       (g_measured_hw_family == 0 ||
@@ -740,6 +785,7 @@ struct BldcServoConfig {
     a->Visit(MJ_NVP(max_regen_power_W));
     a->Visit(MJ_NVP(fw));
     a->Visit(MJ_NVP(zero_angle_trigger));
+    a->Visit(MJ_NVP(cyclic));
     a->Visit(MJ_NVP(max_current_A));
     a->Visit(MJ_NVP(derate_current_A));
     a->Visit(MJ_NVP(max_velocity));

@@ -1078,3 +1078,188 @@ BOOST_AUTO_TEST_CASE(BldcServoControlDynamicInductance) {
   BOOST_CHECK(ctx.status_.mode != kFault);
   BOOST_TEST(ctx.status_.inductance_d_H == 20e-6f, tt::tolerance(1e-9f));
 }
+
+BOOST_AUTO_TEST_CASE(BldcServoControlCyclicAngle) {
+  constexpr int64_t kOneTurn = 1ll << 48;
+  constexpr int32_t kQuarterQ31 = 1 << 30;
+  constexpr int32_t kHalfQ31 = std::numeric_limits<int32_t>::min();
+
+  // Zero position, zero reference: angle 0.
+  BOOST_TEST(Context::CyclicAngleQ31(0, 0, 1, 0) == 0);
+
+  // A quarter turn is pi/2.
+  BOOST_TEST(Context::CyclicAngleQ31(kOneTurn / 4, 0, 1, 0) == kQuarterQ31);
+
+  // A half turn wraps to the negative bound (i.e. -pi == pi).
+  BOOST_TEST(Context::CyclicAngleQ31(kOneTurn / 2, 0, 1, 0) == kHalfQ31);
+
+  // Whole turns are invisible.
+  BOOST_TEST(Context::CyclicAngleQ31(
+                 5 * kOneTurn + kOneTurn / 4, 0, 1, 0) == kQuarterQ31);
+
+  // The zero reference shifts the angle.
+  BOOST_TEST(Context::CyclicAngleQ31(
+                 kOneTurn / 4, kOneTurn / 4, 1, 0) == 0);
+
+  // Negative relative positions wrap correctly: -1/4 turn == -pi/2.
+  BOOST_TEST(Context::CyclicAngleQ31(
+                 -kOneTurn / 4, 0, 1, 0) == -kQuarterQ31);
+
+  // A second harmonic doubles the angle rate.
+  BOOST_TEST(Context::CyclicAngleQ31(kOneTurn / 8, 0, 2, 0) == kQuarterQ31);
+
+  // The phase offset adds, with wrap.
+  BOOST_TEST(Context::CyclicAngleQ31(
+                 kOneTurn / 4, 0, 1, kQuarterQ31) == kHalfQ31);
+}
+
+BOOST_AUTO_TEST_CASE(BldcServoControlCyclicPrepare) {
+  Context ctx;
+
+  auto make_command = [&]() {
+    Context::CommandData cmd;
+    cmd.mode = kPosition;
+    cmd.position = NaN;
+    cmd.velocity = 0.0f;
+    return cmd;
+  };
+
+  {
+    // A simple phase is converted to q31.
+    auto cmd = make_command();
+    cmd.cyclic_torque_Nm = 1.0f;
+    cmd.cyclic_phase = 0.25f;
+    BOOST_CHECK(ctx.PrepareCommand(&cmd) == errc::kSuccess);
+    BOOST_TEST(cmd.cyclic_phase_q31 == (1 << 30));
+  }
+
+  {
+    // Phases wrap modulo one cycle, including negative values.
+    auto cmd = make_command();
+    cmd.cyclic_torque_Nm = 1.0f;
+    cmd.cyclic_phase = -0.75f;
+    BOOST_CHECK(ctx.PrepareCommand(&cmd) == errc::kSuccess);
+    BOOST_TEST(cmd.cyclic_phase_q31 == (1 << 30));
+
+    cmd = make_command();
+    cmd.cyclic_torque_Nm = 1.0f;
+    cmd.cyclic_phase = 1.25f;
+    BOOST_CHECK(ctx.PrepareCommand(&cmd) == errc::kSuccess);
+    BOOST_TEST(cmd.cyclic_phase_q31 == (1 << 30));
+  }
+
+  {
+    // Non-finite cyclic values degrade to no-cyclic.
+    auto cmd = make_command();
+    cmd.cyclic_torque_Nm = NaN;
+    cmd.cyclic_phase = 0.25f;
+    BOOST_CHECK(ctx.PrepareCommand(&cmd) == errc::kSuccess);
+    BOOST_TEST(cmd.cyclic_torque_Nm == 0.0f);
+    BOOST_TEST(cmd.cyclic_phase_q31 == 0);
+
+    cmd = make_command();
+    cmd.cyclic_torque_Nm = 1.0f;
+    cmd.cyclic_phase = NaN;
+    BOOST_CHECK(ctx.PrepareCommand(&cmd) == errc::kSuccess);
+    BOOST_TEST(cmd.cyclic_torque_Nm == 0.0f);
+    BOOST_TEST(cmd.cyclic_phase_q31 == 0);
+  }
+
+  {
+    // Zero amplitude leaves the phase precompute at 0.
+    auto cmd = make_command();
+    cmd.cyclic_torque_Nm = 0.0f;
+    cmd.cyclic_phase = 0.25f;
+    BOOST_CHECK(ctx.PrepareCommand(&cmd) == errc::kSuccess);
+    BOOST_TEST(cmd.cyclic_phase_q31 == 0);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(BldcServoControlCyclicTorque) {
+  constexpr int64_t kOneTurn = 1ll << 48;
+
+  Context ctx;
+  ctx.position_.position_relative_valid = true;
+
+  auto cmd = [&]() {
+    Context::CommandData result;
+    result.mode = kPosition;
+    result.position = NaN;
+    result.cyclic_torque_Nm = 2.0f;
+    result.cyclic_phase = 0.0f;
+    return result;
+  }();
+  BOOST_CHECK(ctx.PrepareCommand(&cmd) == errc::kSuccess);
+
+  {
+    // At a quarter turn past the reference with zero phase, the full
+    // amplitude is applied.
+    ctx.position_.position_raw = kOneTurn / 4;
+    const float torque = ctx.ISR_CyclicTorque(&cmd);
+    BOOST_TEST(torque == 2.0f, tt::tolerance(1e-4f));
+    BOOST_TEST(ctx.status_.cyclic_torque_Nm == 2.0f, tt::tolerance(1e-4f));
+  }
+
+  {
+    // At the reference angle the sine contribution is zero.
+    ctx.position_.position_raw = 0;
+    const float torque = ctx.ISR_CyclicTorque(&cmd);
+    BOOST_TEST(torque == 0.0f, tt::tolerance(1e-4f));
+  }
+
+  {
+    // Three quarters of a turn gives the negative amplitude.
+    ctx.position_.position_raw = 3 * (kOneTurn / 4);
+    const float torque = ctx.ISR_CyclicTorque(&cmd);
+    BOOST_TEST(torque == -2.0f, tt::tolerance(1e-4f));
+  }
+
+  {
+    // The commanded phase shifts the peak.
+    auto shifted = cmd;
+    shifted.cyclic_phase = 0.25f;
+    BOOST_CHECK(ctx.PrepareCommand(&shifted) == errc::kSuccess);
+    ctx.position_.position_raw = 0;
+    const float torque = ctx.ISR_CyclicTorque(&shifted);
+    BOOST_TEST(torque == 2.0f, tt::tolerance(1e-4f));
+  }
+
+  {
+    // The configured zero angle shifts the reference.
+    ctx.cyclic_zero_raw_ = kOneTurn / 4;
+    ctx.position_.position_raw = kOneTurn / 2;
+    const float torque = ctx.ISR_CyclicTorque(&cmd);
+    BOOST_TEST(torque == 2.0f, tt::tolerance(1e-4f));
+    ctx.cyclic_zero_raw_ = 0;
+  }
+
+  {
+    // A second harmonic peaks at one eighth of a turn.
+    ctx.cyclic_harmonic_ = 2;
+    ctx.position_.position_raw = kOneTurn / 8;
+    const float torque = ctx.ISR_CyclicTorque(&cmd);
+    BOOST_TEST(torque == 2.0f, tt::tolerance(1e-4f));
+    ctx.cyclic_harmonic_ = 1;
+  }
+
+  {
+    // Without a valid position no cyclic torque is applied.
+    ctx.position_.position_relative_valid = false;
+    ctx.position_.position_raw = kOneTurn / 4;
+    const float torque = ctx.ISR_CyclicTorque(&cmd);
+    BOOST_TEST(torque == 0.0f);
+    BOOST_TEST(ctx.status_.cyclic_torque_Nm == 0.0f);
+    ctx.position_.position_relative_valid = true;
+  }
+
+  {
+    // Zero amplitude applies no torque and clears the status.
+    auto zero = cmd;
+    zero.cyclic_torque_Nm = 0.0f;
+    BOOST_CHECK(ctx.PrepareCommand(&zero) == errc::kSuccess);
+    ctx.position_.position_raw = kOneTurn / 4;
+    const float torque = ctx.ISR_CyclicTorque(&zero);
+    BOOST_TEST(torque == 0.0f);
+    BOOST_TEST(ctx.status_.cyclic_torque_Nm == 0.0f);
+  }
+}

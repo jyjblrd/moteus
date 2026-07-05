@@ -41,6 +41,7 @@
 #include "fw/orbis.h"
 #include "fw/ma732.h"
 #include "fw/mbed_util.h"
+#include "fw/mcout_receiver.h"
 #include "fw/millisecond_timer.h"
 #include "fw/moteus_hw.h"
 #include "fw/stm32_i2c.h"
@@ -398,6 +399,10 @@ class AuxPort {
         uart_->start_dma_read(current_tunnel_write_buf_);
       }
     }
+
+    if (mcout_) {
+      mcout_->Poll();
+    }
   }
 
 
@@ -438,6 +443,12 @@ class AuxPort {
   // Set callback to be notified when uart_micro_server changes.
   void SetUartServerChangedCallback(UartServerChangedCallback callback) {
     uart_server_changed_callback_ = callback;
+  }
+
+  // Returns the MCOUT receiver if mcout mode is configured, nullptr
+  // otherwise.
+  McoutReceiver* mcout_receiver() {
+    return mcout_ ? &*mcout_ : nullptr;
   }
 
  private:
@@ -871,6 +882,7 @@ class AuxPort {
       uart_server_changed_callback_(nullptr);
     }
 
+    mcout_.reset();
     uart_.reset();
     uart_micro_server_.reset();
 
@@ -1314,6 +1326,10 @@ class AuxPort {
           }
           break;
         }
+        case C::kMcout: {
+          mcout_.emplace(&*uart_, timer_);
+          break;
+        }
         default: {
           status_.error = aux::AuxError::kUartPinError;
           return;
@@ -1551,6 +1567,7 @@ class AuxPort {
   std::optional<BissC> bissc_;
   std::optional<Stm32G4DmaUart> uart_;
   std::optional<UartFdcanusbMicroServer> uart_micro_server_;
+  std::optional<McoutReceiver> mcout_;
   std::optional<Aksim2> aksim2_;
   std::optional<CuiAmt21> cui_amt21_;
   std::optional<DigitalOut> rs422_re_;
