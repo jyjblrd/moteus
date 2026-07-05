@@ -72,6 +72,24 @@ struct FieldWeakeningStatus {
   }
 };
 
+// Emits a short AUX GPIO pulse when output position crosses a configured angle.
+struct ZeroAngleTriggerConfig {
+  bool enable = false;
+  uint8_t aux = 1;
+  uint8_t pin = 0;
+  uint16_t pulse_us = 100;
+  float angle = 0.0f;
+
+  template <typename Archive>
+  void Serialize(Archive* a) {
+    a->Visit(MJ_NVP(enable));
+    a->Visit(MJ_NVP(aux));
+    a->Visit(MJ_NVP(pin));
+    a->Visit(MJ_NVP(pulse_us));
+    a->Visit(MJ_NVP(angle));
+  }
+};
+
 enum BldcServoMode {
   // In this mode, the entire motor driver will be disabled.
   //
@@ -635,6 +653,7 @@ struct BldcServoConfig {
   float max_regen_power_W = std::numeric_limits<float>::quiet_NaN();
 
   FieldWeakeningConfig fw;
+  ZeroAngleTriggerConfig zero_angle_trigger;
 
   float max_current_A =
       (g_measured_hw_family == 0 ||
@@ -720,6 +739,7 @@ struct BldcServoConfig {
     a->Visit(MJ_NVP(flux_brake_resistance_ohm));
     a->Visit(MJ_NVP(max_regen_power_W));
     a->Visit(MJ_NVP(fw));
+    a->Visit(MJ_NVP(zero_angle_trigger));
     a->Visit(MJ_NVP(max_current_A));
     a->Visit(MJ_NVP(derate_current_A));
     a->Visit(MJ_NVP(max_velocity));

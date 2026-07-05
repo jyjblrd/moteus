@@ -277,6 +277,22 @@ class BldcServo::Impl : public BldcServoControl<BldcServo::Impl> {
     return model.current_to_torque(current);
   }
 
+  static constexpr int64_t kZeroAngleTriggerOneTurn = 1ll << 48;
+
+  static int64_t ZeroAngleTriggerRaw(float angle) MOTEUS_CCM_ATTRIBUTE {
+    const float wrapped = angle - std::floor(angle);
+    return static_cast<int64_t>(
+        std::round(wrapped * kZeroAngleTriggerOneTurn));
+  }
+
+  static bool ZeroAngleTriggerCrossed(int64_t previous,
+                                      int64_t current,
+                                      int64_t trigger_raw)
+      MOTEUS_CCM_ATTRIBUTE {
+    return ((previous - trigger_raw) >> 48) !=
+        ((current - trigger_raw) >> 48);
+  }
+
   void UpdateConfig() {
     // The actual sample time is the max of two unrelated
     // contributions: the ISR/ADC chain floor (kIsrSampleTime) and
@@ -298,6 +314,20 @@ class BldcServo::Impl : public BldcServoControl<BldcServo::Impl> {
     velocity_filter_ = ExponentialFilter(rate_config_.pwm_rate_hz, 100.0f);
     temperature_filter_ = ExponentialFilter(rate_config_.pwm_rate_hz, 100.0f);
     InitControlFilters(rate_config_.pwm_rate_hz);
+
+    if (config_.zero_angle_trigger.pulse_us == 0) {
+      zero_angle_trigger_pulse_cycles_ = 0;
+    } else {
+      const float pulse_cycles =
+          (config_.zero_angle_trigger.pulse_us * 1.0e-6f) /
+          rate_config_.period_s;
+      zero_angle_trigger_pulse_cycles_ =
+          std::max<uint32_t>(1, static_cast<uint32_t>(std::ceil(pulse_cycles)));
+    }
+    zero_angle_trigger_raw_ =
+        ZeroAngleTriggerRaw(config_.zero_angle_trigger.angle);
+    zero_angle_trigger_position_valid_ = false;
+    zero_angle_trigger_pulse_remaining_ = 0;
 
     // Ensure that our maximum current stays within the range that can
     // be sensed.
@@ -1000,6 +1030,7 @@ class BldcServo::Impl : public BldcServoControl<BldcServo::Impl> {
 
     status_.position = position_.position;
     status_.velocity = position_.velocity;
+    ISR_UpdateZeroAngleTrigger();
 
     aux_adc_->ISR_EndSample();
     aux1_port_->ISR_EndAnalogSample();
@@ -1314,6 +1345,52 @@ class BldcServo::Impl : public BldcServoControl<BldcServo::Impl> {
         motor_position_->absolute_relative_delta.load());
   }
 
+  void ISR_WriteZeroAngleTriggerPin(bool value) MOTEUS_CCM_ATTRIBUTE {
+    const auto& trigger = config_.zero_angle_trigger;
+    if (trigger.aux == 1) {
+      aux1_port_->WriteDigitalOutPin(trigger.pin, value);
+    } else if (trigger.aux == 2) {
+      aux2_port_->WriteDigitalOutPin(trigger.pin, value);
+    }
+    zero_angle_trigger_output_active_ = value;
+  }
+
+  void ISR_UpdateZeroAngleTrigger() MOTEUS_CCM_ATTRIBUTE {
+    if (!config_.zero_angle_trigger.enable) {
+      if (zero_angle_trigger_output_active_) {
+        ISR_WriteZeroAngleTriggerPin(false);
+      }
+      zero_angle_trigger_position_valid_ = false;
+      zero_angle_trigger_pulse_remaining_ = 0;
+      return;
+    }
+
+    if (zero_angle_trigger_epoch_ != position_.epoch ||
+        !position_.position_relative_valid) {
+      zero_angle_trigger_epoch_ = position_.epoch;
+      zero_angle_trigger_position_valid_ = false;
+      zero_angle_trigger_pulse_remaining_ = 0;
+      ISR_WriteZeroAngleTriggerPin(false);
+      return;
+    }
+
+    if (zero_angle_trigger_position_valid_ &&
+        ZeroAngleTriggerCrossed(zero_angle_trigger_last_position_,
+                                position_.position_raw,
+                                zero_angle_trigger_raw_)) {
+      zero_angle_trigger_pulse_remaining_ = zero_angle_trigger_pulse_cycles_;
+    }
+
+    zero_angle_trigger_last_position_ = position_.position_raw;
+    zero_angle_trigger_position_valid_ = true;
+
+    const bool pulse_active = zero_angle_trigger_pulse_remaining_ > 0;
+    ISR_WriteZeroAngleTriggerPin(pulse_active);
+    if (pulse_active) {
+      zero_angle_trigger_pulse_remaining_--;
+    }
+  }
+
   const Options options_;
   MillisecondTimer* const ms_timer_;
   MotorDriver* const motor_driver_;
@@ -1429,6 +1506,14 @@ class BldcServo::Impl : public BldcServoControl<BldcServo::Impl> {
 
   uint32_t pwm_counts_ = 0;
   Cordic cordic_;
+
+  uint32_t zero_angle_trigger_pulse_cycles_ = 0;
+  uint32_t zero_angle_trigger_pulse_remaining_ = 0;
+  int64_t zero_angle_trigger_raw_ = 0;
+  int64_t zero_angle_trigger_last_position_ = 0;
+  uint8_t zero_angle_trigger_epoch_ = 0;
+  bool zero_angle_trigger_position_valid_ = false;
+  bool zero_angle_trigger_output_active_ = false;
 
   uint32_t adc1_sqr_ = 0;
   uint32_t adc2_sqr_ = 0;

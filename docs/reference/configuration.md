@@ -96,6 +96,19 @@ is not long enough for the normal position PID to track well.
 In an ideal world, you would set this to the moment of inertia of your
 system in measured in kg * m^2.
 
+## `servo.zero_angle_trigger`
+
+When enabled, the firmware emits a pulse on one configured AUX digital
+output each time the measured output position crosses a configured angle,
+modulo one revolution.  The selected AUX pin must also be configured as
+`digital_out`.
+
+* `enable` - Enables the trigger.
+* `aux` - The AUX port number, either 1 or 2.
+* `pin` - The AUX pin index to drive.
+* `pulse_us` - The pulse width in microseconds.
+* `angle` - The trigger angle in output revolutions, modulo one turn.
+
 ## `servo.voltage_mode_control`
 
 When set to non-zero, the current control loop is not closed, and all

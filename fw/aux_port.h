@@ -409,6 +409,12 @@ class AuxPort {
     }
   }
 
+  void WriteDigitalOutPin(size_t pin, bool value) MOTEUS_CCM_ATTRIBUTE {
+    if (pin >= pin_count_) { return; }
+    if (config_.pins[pin].mode != aux::Pin::Mode::kDigitalOutput) { return; }
+    status_.pins[pin] = value;
+  }
+
   void WritePwmOut(int pin, float value) {
     pin = std::max<int>(0, std::min<int>(pin_count_ - 1, pin));
     status_.pwm[pin] = std::max(0.0f, std::min(1.0f, value));

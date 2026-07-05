@@ -175,7 +175,10 @@ g4_mbed_binary(
     deps = MOTEUS_DEPS,
     linker_script = "stm32g474.ld",
     features = ["speedopt"],
-    copts = COPTS,
+    copts = COPTS + [
+        # Use the r4 SER R/T pads instead of the AUX2 connector for UART.
+        "-DMOTEUS_R4_AUX2_RT",
+    ],
 )
 
 genrule(
