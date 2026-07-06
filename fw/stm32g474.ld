@@ -24,7 +24,8 @@ Our memory layout looks like the following:
     might be possible in the future to store the bootloader here given
     that our application never changes the ISR vectors.
 
-0x8004000/16kb - currently unused
+0x8004000/4kb - persistent settings
+0x8005000/12kb - currently unused
 0x8008000/16kb - currently unused
 
 0x800c000/16kb - bootloader
@@ -34,7 +35,7 @@ Our memory layout looks like the following:
 
 0x8010000 - application
 
-0x807f000 - persistent settings
+0x807f000 - application code may extend through here
 
 */
 
@@ -57,3 +58,9 @@ SECTIONS
 
 /* And now delegate everything else to the regular mbed linker script */
 INCLUDE external/com_github_ARMmbed_mbed-g4/linker_script.ld
+
+/* The application may use flash up to the end of the chip.  PersistentConfig
+ * lives in the unused 0x08004000 gap above, outside the application load
+ * range. */
+ASSERT(LOADADDR(.ccmram) + SIZEOF(.ccmram) <= 0x08080000,
+       "application flash image overflows STM32G474 flash")

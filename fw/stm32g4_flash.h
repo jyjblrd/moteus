@@ -27,8 +27,9 @@ class Stm32G4Flash : public mjlib::micro::FlashInterface {
 
   Info GetInfo() override {
     Info result;
-    // The final 4k of flash
-    result.start = reinterpret_cast<char*>(0x807f000);
+    // Store config in the unused gap after the ISR vector block so
+    // the application can use the final flash page for code.
+    result.start = reinterpret_cast<char*>(0x08004000);
     result.end = result.start + 0x1000;
     return result;
   }
@@ -37,8 +38,8 @@ class Stm32G4Flash : public mjlib::micro::FlashInterface {
     uint32_t page_err = 0;
     FLASH_EraseInitTypeDef erase_options{};
     erase_options.TypeErase = FLASH_TYPEERASE_PAGES;
-    erase_options.Banks = FLASH_BANK_2;
-    erase_options.Page = 126;
+    erase_options.Banks = FLASH_BANK_1;
+    erase_options.Page = 8;
     erase_options.NbPages = 2;
     if (HAL_FLASHEx_Erase(&erase_options, &page_err) != HAL_OK) {
       mbed_die();

@@ -201,7 +201,9 @@ int main(void) {
   // Turn on our power light.
   DigitalOut power_led(g_hw_pins.power_led, 0);
 
-  micro::SizedPool<24000> pool;
+  // Startup components allocate from this fixed pool; keep headroom for
+  // optional telemetry/control objects added by feature builds.
+  micro::SizedPool<28000> pool;
 
   FDCan fdcan([]() {
       FDCan::Options options;
