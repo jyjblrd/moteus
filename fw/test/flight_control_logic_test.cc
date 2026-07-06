@@ -184,6 +184,61 @@ BOOST_AUTO_TEST_CASE(FlightMapClampsAndSanitizes) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(FlightThrottleModes) {
+  auto config = MakeConfig();
+  auto frame = MakeArmedFrame();
+
+  {
+    // Velocity mode (the default): throttle scales the velocity
+    // target.
+    config.throttle_max_velocity = 40.0f;
+    config.idle_velocity = 5.0f;
+    auto setpoint = FlightControlLogic::Map(frame, config);
+    BOOST_TEST(setpoint.velocity == 20.0f, tt::tolerance(1e-6f));
+
+    // The idle floor applies at zero throttle.
+    frame.throttle = 0.0f;
+    setpoint = FlightControlLogic::Map(frame, config);
+    BOOST_TEST(setpoint.velocity == 5.0f, tt::tolerance(1e-6f));
+
+    // Out of range throttle clamps.
+    frame.throttle = 2.0f;
+    setpoint = FlightControlLogic::Map(frame, config);
+    BOOST_TEST(setpoint.velocity == 40.0f, tt::tolerance(1e-6f));
+
+    // A non-finite wire throttle degrades to the idle floor.
+    frame.throttle = NaN;
+    setpoint = FlightControlLogic::Map(frame, config);
+    BOOST_TEST(setpoint.velocity == 5.0f, tt::tolerance(1e-6f));
+  }
+
+  {
+    // Torque mode: the fixed velocity config applies instead, and
+    // the torque mapping is unchanged.
+    config.throttle_mode = kThrottleTorque;
+    config.velocity = 7.0f;
+    frame.throttle = 0.5f;
+    const auto setpoint = FlightControlLogic::Map(frame, config);
+    BOOST_TEST(setpoint.velocity == 7.0f, tt::tolerance(1e-6f));
+    BOOST_TEST(setpoint.base_torque_Nm == 1.0f, tt::tolerance(1e-6f));
+  }
+
+  {
+    // The mapped velocity reaches the emitted command and the
+    // telemetry mirror.
+    Harness harness;
+    config.throttle_mode = kThrottleVelocity;
+    config.throttle_max_velocity = 40.0f;
+    config.idle_velocity = 5.0f;
+    frame.throttle = 0.5f;
+    const auto result = harness.Fresh(frame, config);
+    BOOST_TEST(result.action == Result::kCommand);
+    BOOST_TEST(result.command.velocity == 20.0f, tt::tolerance(1e-6f));
+    BOOST_TEST(result.command.kd_scale == 20.0f);
+    BOOST_TEST(harness.status.velocity_cmd == 20.0f, tt::tolerance(1e-6f));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(FlightGating) {
   Harness harness;
   auto config = MakeConfig();
@@ -241,9 +296,11 @@ BOOST_AUTO_TEST_CASE(FlightGating) {
     const auto& command = result.command;
     BOOST_TEST(command.mode == kPosition);
     BOOST_TEST(std::isnan(command.position));
+    // Velocity mode is the default, but with the velocity scales
+    // unconfigured the target is 0.
     BOOST_TEST(command.velocity == 0.0f);
     BOOST_TEST(command.kp_scale == 0.0f);
-    BOOST_TEST(command.kd_scale == 0.0f);
+    BOOST_TEST(command.kd_scale == 20.0f);
     BOOST_TEST(command.ilimit_scale == 1.0f);
     BOOST_TEST(std::isnan(command.accel_limit));
     BOOST_TEST(std::isnan(command.velocity_limit));

@@ -681,11 +681,38 @@ Master enable.  When zero, the MCOUT stream is still parsed and
 reported in the `mcout` telemetry channel, but the servo is never
 commanded.
 
+## `mcout.throttle_mode`
+
+Selects what the normalized throttle commands:
+
+* 0 - torque: throttle scales a feedforward torque
+  (`throttle_max_torque_Nm`); the velocity target is the fixed
+  `mcout.velocity`.  Set `kd_scale` to 0 for pure feedforward
+  torque.
+* 1 - velocity (default): throttle scales the velocity target
+  (`throttle_max_velocity`) and `kd_scale` provides the tracking,
+  matching the bench-test scripts.
+
+## `mcout.throttle_max_velocity`
+
+In velocity mode, the velocity target in output revolutions per
+second at full throttle.  The commanded velocity is:
+
+```
+max(idle_velocity, throttle * throttle_max_velocity)
+```
+
+## `mcout.idle_velocity`
+
+In velocity mode, the minimum velocity target while output is
+engaged, e.g. ground idle spin.
+
 ## `mcout.throttle_max_torque_Nm`
 
 The base (collective) torque in Nm applied at full throttle.  The
 commanded base torque is the normalized throttle multiplied by this
-value.
+value.  In velocity mode this acts as an optional feedforward assist
+for the velocity tracking.
 
 ## `mcout.idle_torque_Nm`
 
@@ -734,8 +761,10 @@ disallowed.  Loosen these only for bench setups.
 
 ## `mcout.kp_scale` / `mcout.kd_scale` / `mcout.ilimit_scale` / `mcout.velocity` / `mcout.accel_limit` / `mcout.velocity_limit`
 
-Optional closed loop terms mirroring the position mode command
-scales and limits.  The defaults give pure feedforward torque
-control.  A nonzero `kd_scale` adds velocity damping about
-`velocity`, which matches the bench-test regime used during
-development.
+Closed loop terms mirroring the position mode command scales and
+limits.  `kp_scale` defaults to 0 so the position loop does not
+fight the cyclic torque; `kd_scale` defaults to 20 to provide the
+velocity tracking, matching the bench-test scripts.  `velocity` is
+the fixed target used in torque mode only.  `accel_limit` shapes
+velocity target changes, i.e. the spool-up ramp; NaN uses
+`servo.default_accel_limit`.

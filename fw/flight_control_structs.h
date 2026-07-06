@@ -34,13 +34,42 @@
 
 namespace moteus {
 
+// Selects what the normalized MCOUT throttle commands.
+enum FlightThrottleMode : uint8_t {
+  // Throttle scales a feedforward torque
+  // (mcout.throttle_max_torque_Nm); the velocity target is the fixed
+  // mcout.velocity.  Set kd_scale to 0 for pure feedforward torque.
+  kThrottleTorque = 0,
+
+  // Throttle scales the velocity target
+  // (mcout.throttle_max_velocity) and kd_scale provides the
+  // tracking, matching the bench-test scripts.  Any throttle-derived
+  // base torque is still applied as a feedforward assist.
+  kThrottleVelocity = 1,
+
+  kNumFlightThrottleModes,
+};
+
 struct FlightControlConfig {
   // Master enable.  When false, the MCOUT stream is still parsed and
   // reported in telemetry, but the servo is never commanded.
   bool enable = false;
 
+  FlightThrottleMode throttle_mode = kThrottleVelocity;
+
+  // Velocity target in output rev/s at throttle == 1 (velocity
+  // mode).  The commanded velocity is
+  // max(idle_velocity, throttle * throttle_max_velocity).
+  float throttle_max_velocity = 0.0f;
+
+  // Minimum velocity target while output is engaged (velocity
+  // mode), e.g. ground idle spin.
+  float idle_velocity = 0.0f;
+
   // Base (collective) torque in Nm applied at throttle == 1.  The
-  // commanded base torque is throttle * throttle_max_torque_Nm.
+  // commanded base torque is throttle * throttle_max_torque_Nm.  In
+  // velocity mode this acts as an optional feedforward assist for
+  // the velocity tracking.
   float throttle_max_torque_Nm = 0.0f;
 
   // Minimum base torque in Nm while output is engaged, e.g. to keep
@@ -81,21 +110,28 @@ struct FlightControlConfig {
       mcout::Frame::kOutputEnabled;
   uint16_t disallow_flags = mcout::Frame::kEmergencyStop;
 
-  // Optional closed-loop terms, mirroring the position-mode command
-  // scales and limits.  The defaults give pure feedforward torque
-  // control.  A nonzero kd_scale adds velocity damping about
-  // `velocity`, which matches the bench-test regime used during
-  // development.
+  // Closed-loop terms, mirroring the position-mode command scales
+  // and limits.  kp is kept at 0 so the position loop does not fight
+  // the cyclic torque; kd provides the velocity tracking.  The
+  // kd_scale default matches the bench-test scripts.  For pure
+  // feedforward torque control set kd_scale to 0.
   float kp_scale = 0.0f;
-  float kd_scale = 0.0f;
+  float kd_scale = 20.0f;
   float ilimit_scale = 1.0f;
+  // The fixed velocity target used in torque mode (typically 0);
+  // ignored in velocity mode.
   float velocity = 0.0f;
+  // The acceleration limit shapes velocity target changes, i.e. the
+  // spool-up ramp.  NaN uses servo.default_accel_limit.
   float accel_limit = std::numeric_limits<float>::quiet_NaN();
   float velocity_limit = std::numeric_limits<float>::quiet_NaN();
 
   template <typename Archive>
   void Serialize(Archive* a) {
     a->Visit(MJ_NVP(enable));
+    a->Visit(MJ_NVP(throttle_mode));
+    a->Visit(MJ_NVP(throttle_max_velocity));
+    a->Visit(MJ_NVP(idle_velocity));
     a->Visit(MJ_NVP(throttle_max_torque_Nm));
     a->Visit(MJ_NVP(idle_torque_Nm));
     a->Visit(MJ_NVP(cyclic_max_torque_Nm));
@@ -156,6 +192,7 @@ struct FlightControlStatus {
   float throttle = 0.0f;
 
   // The most recently commanded mapping outputs.
+  float velocity_cmd = 0.0f;
   float base_torque_Nm = 0.0f;
   float cyclic_torque_Nm = 0.0f;
   float cyclic_phase = 0.0f;
@@ -182,6 +219,7 @@ struct FlightControlStatus {
     a->Visit(MJ_NVP(pitch));
     a->Visit(MJ_NVP(yaw));
     a->Visit(MJ_NVP(throttle));
+    a->Visit(MJ_NVP(velocity_cmd));
     a->Visit(MJ_NVP(base_torque_Nm));
     a->Visit(MJ_NVP(cyclic_torque_Nm));
     a->Visit(MJ_NVP(cyclic_phase));
@@ -217,12 +255,13 @@ class FlightControlLogic {
   };
 
   struct Setpoint {
+    float velocity = 0.0f;
     float base_torque_Nm = 0.0f;
     float cyclic_torque_Nm = 0.0f;
     float cyclic_phase = 0.0f;
   };
 
-  /// Map normalized MCOUT commands to torque setpoints.
+  /// Map normalized MCOUT commands to velocity/torque setpoints.
   ///
   /// The roll/pitch vector is interpreted in the moteus reference
   /// frame.  Phase convention: a pure +pitch command gives phase 0, a
@@ -236,6 +275,13 @@ class FlightControlLogic {
 
     const float throttle =
         Limit(SanitizeInput(frame.throttle), 0.0f, 1.0f);
+
+    result.velocity =
+        (config.throttle_mode == kThrottleVelocity) ?
+        std::max(config.idle_velocity,
+                 throttle * config.throttle_max_velocity) :
+        config.velocity;
+
     result.base_torque_Nm = std::max(
         config.idle_torque_Nm,
         throttle * config.throttle_max_torque_Nm);
@@ -325,6 +371,7 @@ class FlightControlLogic {
     last_frame_count_ = frame_count;
 
     const Setpoint setpoint = Map(frame, config);
+    status->velocity_cmd = setpoint.velocity;
     status->base_torque_Nm = setpoint.base_torque_Nm;
     status->cyclic_torque_Nm = setpoint.cyclic_torque_Nm;
     status->cyclic_phase = setpoint.cyclic_phase;
@@ -332,7 +379,7 @@ class FlightControlLogic {
     auto& command = result.command;
     command.mode = kPosition;
     command.position = std::numeric_limits<float>::quiet_NaN();
-    command.velocity = config.velocity;
+    command.velocity = setpoint.velocity;
     command.kp_scale = config.kp_scale;
     command.kd_scale = config.kd_scale;
     command.ilimit_scale = config.ilimit_scale;
@@ -396,6 +443,20 @@ struct IsEnum<moteus::FlightControlState> {
         { S::kFlightNoLink, "no_link" },
         { S::kFlightStandby, "standby" },
         { S::kFlightActive, "active" },
+      }};
+  }
+};
+
+template <>
+struct IsEnum<moteus::FlightThrottleMode> {
+  static constexpr bool value = true;
+
+  using T = moteus::FlightThrottleMode;
+  static std::array<std::pair<T, const char*>,
+                    T::kNumFlightThrottleModes> map() {
+    return { {
+        { T::kThrottleTorque, "torque" },
+        { T::kThrottleVelocity, "velocity" },
       }};
   }
 };

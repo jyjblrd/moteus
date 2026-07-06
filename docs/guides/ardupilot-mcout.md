@@ -7,7 +7,9 @@ control state over a serial port using the AP_MotorControlOutput
 ("MCOUT") protocol; moteus receives that stream on an AUX UART and
 performs the vehicle specific mixing:
 
-* The normalized throttle sets a base (collective) torque.
+* The normalized throttle sets the rotor velocity target (the
+  default), or a base (collective) torque, per
+  `mcout.throttle_mode`.
 * The roll/pitch command vector sets the amplitude and phase of an
   angle-synchronous "cyclic" torque, evaluated at the full control
   rate and phase locked to the measured rotor angle.  Accelerating
@@ -27,7 +29,7 @@ AuxPort (uart.mode = mcout) -> McoutReceiver (DMA + frame parser)
 FlightControl (mcout.* config: gating, mapping), one command per frame
    |
    v
-BldcServo position mode command (feedforward + cyclic torque terms)
+BldcServo position mode command (velocity + feedforward + cyclic)
    |
    v
 servo.cyclic.* ISR term: base + amplitude * sin(2*pi*(harmonic*(angle
@@ -82,8 +84,9 @@ conf set servopos.position_max nan
 conf set servo.cyclic.harmonic 1
 conf set servo.cyclic.zero_angle 0.0
 
-conf set mcout.throttle_max_torque_Nm 1.5
-conf set mcout.idle_torque_Nm 0.05
+conf set mcout.throttle_mode 1           # velocity (default)
+conf set mcout.throttle_max_velocity 40  # rev/s at full throttle
+conf set mcout.idle_velocity 5           # ground idle spin
 conf set mcout.cyclic_max_torque_Nm 0.8
 conf set mcout.cyclic_phase_offset 0.0
 conf set mcout.max_torque_Nm 2.0     # default 0 leaves the servo torqueless
@@ -105,10 +108,19 @@ roll/pitch vector `(r, p)` (interpreted in the moteus reference
 frame):
 
 ```
+velocity = max(idle_velocity, throttle * throttle_max_velocity)
 base_Nm  = max(idle_torque_Nm, throttle * throttle_max_torque_Nm)
 amp_Nm   = min(1, sqrt(r^2 + p^2)) * cyclic_max_torque_Nm
 phase    = atan2(r, p) / (2*pi) + cyclic_phase_offset   [cycles]
 ```
+
+In the default velocity throttle mode this mirrors the bench
+scripts: the servo tracks `velocity` through the kd term
+(`kp_scale` 0, `kd_scale` 20 by default) with `mcout.accel_limit`
+shaping the spool-up ramp, while `base_Nm` is an optional
+feedforward assist and the cyclic torque modulates about it.  With
+`mcout.throttle_mode` 0 the throttle drives `base_Nm` instead and
+the velocity target is the fixed `mcout.velocity`.
 
 A pure +pitch command gives phase 0; a pure +roll command gives phase
 0.25.  Physical alignment between the flight controller frame, the
@@ -117,14 +129,13 @@ propeller's zero, and rotor phase lag is tuned with
 
 For each newly received frame while engaged (up to 400Hz),
 FlightControl sends a position mode command with `position` NaN,
-`feedforward_Nm = base_Nm`, the cyclic amplitude/phase above, the
-torque limit from `mcout.max_torque_Nm` (default 0 — the servo stays
-torqueless until it is configured), a watchdog of
-`mcout.watchdog_timeout_s`, and the configured
-`kp_scale`/`kd_scale`/`velocity` (zero by default, i.e. pure
-feedforward torque).  The servo evaluates the cyclic sine at the PWM
-control rate directly from the encoder angle, so the torque profile
-stays phase locked between flight controller updates.
+the mapped `velocity`, `feedforward_Nm = base_Nm`, the cyclic
+amplitude/phase above, the torque limit from `mcout.max_torque_Nm`
+(default 0 — the servo stays torqueless until it is configured), a
+watchdog of `mcout.watchdog_timeout_s`, and the configured
+`kp_scale`/`kd_scale`.  The servo evaluates the cyclic sine at the
+PWM control rate directly from the encoder angle, so the torque
+profile stays phase locked between flight controller updates.
 
 ## Safety gating
 
