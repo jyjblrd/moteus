@@ -74,7 +74,7 @@ class McoutReceiver {
 
   void Feed(uint8_t byte) {
     if (parser_.Feed(byte, &frame_)) {
-      last_frame_ms_ = timer_->read_ms();
+      last_frame_ms_ = timer_->ms_since_boot();
       have_frame_ = true;
     }
   }

@@ -55,9 +55,11 @@ void FlightControl::PollMillisecond() {
     if (have_frame) {
       frame = receiver->frame();
 
-      // Unsigned arithmetic keeps this correct across read_ms()
-      // rollover.
-      const uint32_t age_ms = timer_->read_ms() - receiver->last_frame_ms();
+      // Use ms_since_boot here: on some targets read_ms() comes
+      // from a 16-bit microsecond counter and wraps too quickly for
+      // mcout.timeout_s.
+      const uint32_t age_ms =
+          timer_->ms_since_boot() - receiver->last_frame_ms();
       frame_age_s = static_cast<float>(age_ms) * 0.001f;
 
       status_.sequence = frame.sequence;
