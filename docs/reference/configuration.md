@@ -736,6 +736,13 @@ with `servo.cyclic.zero_angle` to align the flight controller's
 roll/pitch frame with the propeller's physical zero and to compensate
 for phase lag in the rotor response.
 
+## `mcout.invert_roll` / `mcout.invert_pitch` / `mcout.invert_yaw`
+
+Invert the corresponding MCOUT command axis before cyclic mapping.
+These default to 0.  Use them to match the flight controller sign
+convention to the propeller's physical cyclic response without changing
+ArduPilot's global RC or attitude-control signs.
+
 ## `mcout.timeout_s`
 
 The servo is stopped when the newest valid packet is older than this

@@ -149,6 +149,42 @@ BOOST_AUTO_TEST_CASE(FlightMapBasic) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(FlightMapAxisInverts) {
+  auto config = MakeConfig();
+  auto frame = MakeArmedFrame();
+
+  {
+    // Roll inversion mirrors the cyclic phase across the pitch axis.
+    config.invert_roll = true;
+    frame.roll = 0.5f;
+    frame.pitch = 0.0f;
+    const auto setpoint = FlightControlLogic::Map(frame, config);
+    BOOST_TEST(setpoint.cyclic_phase == -0.25f, tt::tolerance(1e-4f));
+  }
+
+  {
+    // Pitch inversion flips pure +pitch to the opposite phase.
+    config = MakeConfig();
+    config.invert_pitch = true;
+    frame.roll = 0.0f;
+    frame.pitch = 0.5f;
+    const auto setpoint = FlightControlLogic::Map(frame, config);
+    BOOST_TEST(std::abs(setpoint.cyclic_phase) == 0.5f,
+               tt::tolerance(1e-4f));
+  }
+
+  {
+    // Yaw is not used for cyclic, but the configured command axis still
+    // reports with the selected sign.
+    config = MakeConfig();
+    config.invert_yaw = true;
+    frame.yaw = 0.25f;
+    const auto command_frame =
+        FlightControlLogic::ApplyAxisInverts(frame, config);
+    BOOST_TEST(command_frame.yaw == -0.25f, tt::tolerance(1e-6f));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(FlightMapClampsAndSanitizes) {
   const auto config = MakeConfig();
   auto frame = MakeArmedFrame();

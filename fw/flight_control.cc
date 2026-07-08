@@ -66,9 +66,11 @@ void FlightControl::PollMillisecond() {
       status_.flags = frame.flags;
       status_.spool_state = frame.spool_state;
       status_.desired_spool_state = frame.desired_spool_state;
-      status_.roll = frame.roll;
-      status_.pitch = frame.pitch;
-      status_.yaw = frame.yaw;
+      const auto command_frame =
+          FlightControlLogic::ApplyAxisInverts(frame, config_);
+      status_.roll = command_frame.roll;
+      status_.pitch = command_frame.pitch;
+      status_.yaw = command_frame.yaw;
       status_.throttle = frame.throttle;
     }
   }

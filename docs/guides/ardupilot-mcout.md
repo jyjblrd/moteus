@@ -104,8 +104,8 @@ That is the recommended state for first bring-up.
 ## Command mapping
 
 With normalized inputs `throttle` (clamped to [0, 1]) and the
-roll/pitch vector `(r, p)` (interpreted in the moteus reference
-frame):
+sign-adjusted roll/pitch vector `(r, p)` (interpreted in the moteus
+reference frame):
 
 ```
 velocity = max(idle_velocity, throttle * throttle_max_velocity)
@@ -126,6 +126,8 @@ A pure +pitch command gives phase 0; a pure +roll command gives phase
 0.25.  Physical alignment between the flight controller frame, the
 propeller's zero, and rotor phase lag is tuned with
 `mcout.cyclic_phase_offset` together with `servo.cyclic.zero_angle`.
+Use `mcout.invert_roll` or `mcout.invert_pitch` when one control axis
+is mirrored instead of only phase-shifted.
 
 For each newly received frame while engaged (up to 400Hz),
 FlightControl sends a position mode command with `position` NaN,

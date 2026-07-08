@@ -88,6 +88,11 @@ struct FlightControlConfig {
   // compensate phase lag from rotor dynamics.
   float cyclic_phase_offset = 0.0f;
 
+  // Invert MCOUT command axes before cyclic mapping.
+  bool invert_roll = false;
+  bool invert_pitch = false;
+  bool invert_yaw = false;
+
   // The servo is stopped when the newest valid packet is older than
   // this many seconds.
   float timeout_s = 0.1f;
@@ -136,6 +141,9 @@ struct FlightControlConfig {
     a->Visit(MJ_NVP(idle_torque_Nm));
     a->Visit(MJ_NVP(cyclic_max_torque_Nm));
     a->Visit(MJ_NVP(cyclic_phase_offset));
+    a->Visit(MJ_NVP(invert_roll));
+    a->Visit(MJ_NVP(invert_pitch));
+    a->Visit(MJ_NVP(invert_yaw));
     a->Visit(MJ_NVP(timeout_s));
     a->Visit(MJ_NVP(watchdog_timeout_s));
     a->Visit(MJ_NVP(max_torque_Nm));
@@ -269,12 +277,22 @@ class FlightControlLogic {
   /// atan2(roll, pitch) in cycles, plus mcout.cyclic_phase_offset.
   /// Physical alignment is tuned with cyclic_phase_offset together
   /// with servo.cyclic.zero_angle.
+  static mcout::Frame ApplyAxisInverts(const mcout::Frame& frame,
+                                       const FlightControlConfig& config) {
+    auto result = frame;
+    result.roll = config.invert_roll ? -result.roll : result.roll;
+    result.pitch = config.invert_pitch ? -result.pitch : result.pitch;
+    result.yaw = config.invert_yaw ? -result.yaw : result.yaw;
+    return result;
+  }
+
   static Setpoint Map(const mcout::Frame& frame,
                       const FlightControlConfig& config) {
     Setpoint result;
+    const auto command_frame = ApplyAxisInverts(frame, config);
 
     const float throttle =
-        Limit(SanitizeInput(frame.throttle), 0.0f, 1.0f);
+        Limit(SanitizeInput(command_frame.throttle), 0.0f, 1.0f);
 
     result.velocity =
         (config.throttle_mode == kThrottleVelocity) ?
@@ -286,8 +304,8 @@ class FlightControlLogic {
         config.idle_torque_Nm,
         throttle * config.throttle_max_torque_Nm);
 
-    const float roll = SanitizeInput(frame.roll);
-    const float pitch = SanitizeInput(frame.pitch);
+    const float roll = SanitizeInput(command_frame.roll);
+    const float pitch = SanitizeInput(command_frame.pitch);
     const float magnitude = std::sqrt(roll * roll + pitch * pitch);
 
     result.cyclic_torque_Nm =
