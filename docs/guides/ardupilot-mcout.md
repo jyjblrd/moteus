@@ -110,7 +110,8 @@ reference frame):
 ```
 velocity = max(idle_velocity, throttle * throttle_max_velocity)
 base_Nm  = max(idle_torque_Nm, throttle * throttle_max_torque_Nm)
-amp_Nm   = min(1, sqrt(r^2 + p^2)) * cyclic_max_torque_Nm
+cyclic_max = speed schedule, or cyclic_max_torque_Nm when disabled
+amp_Nm   = min(1, sqrt(r^2 + p^2)) * cyclic_max
 phase    = atan2(r, p) / (2*pi) + cyclic_phase_offset   [cycles]
 ```
 
@@ -128,6 +129,13 @@ propeller's zero, and rotor phase lag is tuned with
 `mcout.cyclic_phase_offset` together with `servo.cyclic.zero_angle`.
 Use `mcout.invert_roll` or `mcout.invert_pitch` when one control axis
 is mirrored instead of only phase-shifted.
+
+The optional cyclic speed schedule linearly ramps full-stick cyclic
+torque from `mcout.cyclic_schedule_low_torque_Nm` at
+`mcout.cyclic_schedule_low_speed` to `mcout.cyclic_max_torque_Nm` at
+`mcout.cyclic_schedule_high_speed`, using filtered absolute output
+velocity.  The schedule is disabled when the high speed is not greater
+than the low speed.
 
 For each newly received frame while engaged (up to 400Hz),
 FlightControl sends a position mode command with `position` NaN,

@@ -723,11 +723,22 @@ throttle.
 ## `mcout.cyclic_max_torque_Nm`
 
 The cyclic torque amplitude in Nm for a unit magnitude roll/pitch
-command.  The commanded amplitude is:
+command.  Without the speed schedule below, the commanded amplitude is:
 
 ```
 min(1, sqrt(roll^2 + pitch^2)) * cyclic_max_torque_Nm
 ```
+
+When the speed schedule is enabled, this is the high-speed endpoint.
+
+## `mcout.cyclic_schedule_low_speed` / `mcout.cyclic_schedule_high_speed` / `mcout.cyclic_schedule_low_torque_Nm`
+
+Optional linear speed schedule for full-stick cyclic torque.  The
+schedule is disabled unless `cyclic_schedule_high_speed` is greater
+than `cyclic_schedule_low_speed`.  Speeds are absolute output rev/s.
+Below the low speed, full-stick cyclic uses
+`cyclic_schedule_low_torque_Nm`; above the high speed, it uses
+`cyclic_max_torque_Nm`; between them it interpolates linearly.
 
 ## `mcout.cyclic_phase_offset`
 
