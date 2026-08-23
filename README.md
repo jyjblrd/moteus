@@ -3,6 +3,13 @@
 This contains full designs for the moteus brushless servo actuator,
 including firmware and PCBs.
 
+This branch adds direct ArduPilot MCOUT control over an AUX UART for
+underactuated propellers, including velocity-based throttle, scheduled
+angle-synchronous cyclic torque, safety gating, telemetry, axis inversion,
+and a zero-angle AUX trigger.  See the [ArduPilot MCOUT guide](docs/guides/ardupilot-mcout.md)
+for setup and operation, and the [configuration reference](docs/reference/configuration.md)
+for the new `mcout` and `servo.cyclic` parameters.
+
 **WARNING**: This is not just a software project.  It includes designs
 for moderately high power electronics.  It has not yet burned down my
 (or anyone's that I know of) house, but there are no guarantees.
