@@ -15,6 +15,7 @@
 #include "fw/flight_control.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "fw/mcout_receiver.h"
@@ -81,7 +82,8 @@ void FlightControl::PollMillisecond() {
 
   const auto result = logic_.Update(
       receiver != nullptr, have_frame, frame, frame_age_s,
-      status_.valid_frames, servo_faulted, config_, &status_);
+      status_.valid_frames, servo_faulted, config_, &status_,
+      std::abs(bldc_->status().velocity_filt));
 
   switch (result.action) {
     case FlightControlLogic::Result::kNone: {

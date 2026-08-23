@@ -78,9 +78,18 @@ struct FlightControlConfig {
   float idle_torque_Nm = 0.0f;
 
   // Cyclic torque amplitude in Nm for a unit magnitude roll/pitch
-  // command.  The commanded amplitude is
-  // min(1, sqrt(roll^2 + pitch^2)) * cyclic_max_torque_Nm.
+  // command.  Without the speed schedule below, the commanded
+  // amplitude is min(1, sqrt(roll^2 + pitch^2)) *
+  // cyclic_max_torque_Nm.  With the schedule enabled, this is the
+  // high-speed endpoint.
   float cyclic_max_torque_Nm = 0.0f;
+
+  // Optional linear speed schedule for full-stick cyclic torque.  The
+  // schedule is disabled unless cyclic_schedule_high_speed is greater
+  // than cyclic_schedule_low_speed.  Speeds are absolute output rev/s.
+  float cyclic_schedule_low_speed = 0.0f;
+  float cyclic_schedule_high_speed = 0.0f;
+  float cyclic_schedule_low_torque_Nm = 0.0f;
 
   // Added to the commanded cyclic phase, in cycles.  Use this to
   // align the flight controller's roll/pitch frame with the
@@ -140,6 +149,9 @@ struct FlightControlConfig {
     a->Visit(MJ_NVP(throttle_max_torque_Nm));
     a->Visit(MJ_NVP(idle_torque_Nm));
     a->Visit(MJ_NVP(cyclic_max_torque_Nm));
+    a->Visit(MJ_NVP(cyclic_schedule_low_speed));
+    a->Visit(MJ_NVP(cyclic_schedule_high_speed));
+    a->Visit(MJ_NVP(cyclic_schedule_low_torque_Nm));
     a->Visit(MJ_NVP(cyclic_phase_offset));
     a->Visit(MJ_NVP(invert_roll));
     a->Visit(MJ_NVP(invert_pitch));
@@ -287,7 +299,8 @@ class FlightControlLogic {
   }
 
   static Setpoint Map(const mcout::Frame& frame,
-                      const FlightControlConfig& config) {
+                      const FlightControlConfig& config,
+                      float abs_output_velocity = 0.0f) {
     Setpoint result;
     const auto command_frame = ApplyAxisInverts(frame, config);
 
@@ -307,9 +320,11 @@ class FlightControlLogic {
     const float roll = SanitizeInput(command_frame.roll);
     const float pitch = SanitizeInput(command_frame.pitch);
     const float magnitude = std::sqrt(roll * roll + pitch * pitch);
+    const float cyclic_max_torque_Nm =
+        CyclicMaxTorque(config, abs_output_velocity);
 
     result.cyclic_torque_Nm =
-        std::min(magnitude, 1.0f) * config.cyclic_max_torque_Nm;
+        std::min(magnitude, 1.0f) * cyclic_max_torque_Nm;
     result.cyclic_phase =
         ((magnitude > 1e-6f) ?
          (std::atan2(roll, pitch) * k1OverTwoPi) : 0.0f) +
@@ -329,6 +344,7 @@ class FlightControlLogic {
   ///                      while engaged, a new command is emitted
   ///                      only when this advances
   /// @p servo_faulted     the servo is currently in the fault state
+  /// @p abs_output_velocity  filtered absolute output velocity, in rev/s
   ///
   /// Only the state/gate/mapping fields of @p status are written
   /// here; link statistics are maintained by the caller.
@@ -339,7 +355,8 @@ class FlightControlLogic {
                 uint32_t frame_count,
                 bool servo_faulted,
                 const FlightControlConfig& config,
-                FlightControlStatus* status) {
+                FlightControlStatus* status,
+                float abs_output_velocity = 0.0f) {
     if (!config.enable || !receiver_present) {
       status->link_up = false;
       return Disengage(kFlightDisabled, status);
@@ -388,7 +405,7 @@ class FlightControlLogic {
     have_commanded_ = true;
     last_frame_count_ = frame_count;
 
-    const Setpoint setpoint = Map(frame, config);
+    const Setpoint setpoint = Map(frame, config, abs_output_velocity);
     status->velocity_cmd = setpoint.velocity;
     status->base_torque_Nm = setpoint.base_torque_Nm;
     status->cyclic_torque_Nm = setpoint.cyclic_torque_Nm;
@@ -423,6 +440,29 @@ class FlightControlLogic {
 
   static float Limit(float value, float min, float max) {
     return std::min(max, std::max(min, value));
+  }
+
+  static float CyclicMaxTorque(const FlightControlConfig& config,
+                               float abs_output_velocity) {
+    if (!(config.cyclic_schedule_high_speed >
+          config.cyclic_schedule_low_speed)) {
+      return config.cyclic_max_torque_Nm;
+    }
+
+    const float low_speed =
+        std::max(0.0f, SanitizeInput(config.cyclic_schedule_low_speed));
+    const float high_speed =
+        std::max(0.0f, SanitizeInput(config.cyclic_schedule_high_speed));
+    if (!(high_speed > low_speed)) { return config.cyclic_max_torque_Nm; }
+
+    const float speed = std::abs(SanitizeInput(abs_output_velocity));
+    const float t = Limit((speed - low_speed) / (high_speed - low_speed),
+                          0.0f, 1.0f);
+    const float low_torque =
+        std::max(0.0f, SanitizeInput(config.cyclic_schedule_low_torque_Nm));
+    const float high_torque =
+        std::max(0.0f, SanitizeInput(config.cyclic_max_torque_Nm));
+    return low_torque + t * (high_torque - low_torque);
   }
 
   Result Disengage(FlightControlState state, FlightControlStatus* status) {

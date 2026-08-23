@@ -61,9 +61,10 @@ struct Harness {
 
   Result Fresh(const mcout::Frame& frame,
                const FlightControlConfig& config,
-               bool servo_faulted = false) {
+               bool servo_faulted = false,
+               float abs_output_velocity = 0.0f) {
     return dut.Update(true, true, frame, 0.01f, ++frame_count,
-                      servo_faulted, config, &status);
+                      servo_faulted, config, &status, abs_output_velocity);
   }
 
   Result Stale(const mcout::Frame& frame,
@@ -182,6 +183,51 @@ BOOST_AUTO_TEST_CASE(FlightMapAxisInverts) {
     const auto command_frame =
         FlightControlLogic::ApplyAxisInverts(frame, config);
     BOOST_TEST(command_frame.yaw == -0.25f, tt::tolerance(1e-6f));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(FlightMapCyclicSpeedSchedule) {
+  auto config = MakeConfig();
+  auto frame = MakeArmedFrame();
+  frame.roll = 1.0f;
+
+  config.cyclic_schedule_low_speed = 10.0f;
+  config.cyclic_schedule_high_speed = 30.0f;
+  config.cyclic_schedule_low_torque_Nm = 0.2f;
+  config.cyclic_max_torque_Nm = 1.0f;
+
+  {
+    // Below the low-speed endpoint, full-stick cyclic uses the low torque.
+    const auto setpoint = FlightControlLogic::Map(frame, config, 0.0f);
+    BOOST_TEST(setpoint.cyclic_torque_Nm == 0.2f, tt::tolerance(1e-6f));
+  }
+
+  {
+    // Halfway through the speed window, torque is linearly interpolated.
+    const auto setpoint = FlightControlLogic::Map(frame, config, 20.0f);
+    BOOST_TEST(setpoint.cyclic_torque_Nm == 0.6f, tt::tolerance(1e-6f));
+  }
+
+  {
+    // Above the high-speed endpoint, full-stick cyclic reaches
+    // cyclic_max_torque_Nm.
+    const auto setpoint = FlightControlLogic::Map(frame, config, 40.0f);
+    BOOST_TEST(setpoint.cyclic_torque_Nm == 1.0f, tt::tolerance(1e-6f));
+  }
+
+  {
+    // Stick magnitude still scales the scheduled full-stick torque.
+    frame.roll = 0.5f;
+    const auto setpoint = FlightControlLogic::Map(frame, config, 20.0f);
+    BOOST_TEST(setpoint.cyclic_torque_Nm == 0.3f, tt::tolerance(1e-6f));
+  }
+
+  {
+    // With an invalid speed range, the existing fixed gain remains active.
+    config.cyclic_schedule_high_speed = config.cyclic_schedule_low_speed;
+    frame.roll = 1.0f;
+    const auto setpoint = FlightControlLogic::Map(frame, config, 0.0f);
+    BOOST_TEST(setpoint.cyclic_torque_Nm == 1.0f, tt::tolerance(1e-6f));
   }
 }
 
