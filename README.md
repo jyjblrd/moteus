@@ -7,6 +7,12 @@ and a zero-angle AUX trigger.  See the [ArduPilot MCOUT guide](docs/guides/ardup
 for setup and operation, and the [configuration reference](docs/reference/configuration.md)
 for the new `mcout` and `servo.cyclic` parameters.
 
+A working controller configuration for this setup is in
+[`configs/moteus-mcout-working.cfg`](configs/moteus-mcout-working.cfg).
+Load it with `python3 -m moteus.moteus_tool --target 1 --restore-config
+configs/moteus-mcout-working.cfg`.  The matching ArduPilot parameters
+live in the [ArduPilot fork](https://github.com/jyjblrd/ardupilot/blob/master/configs/mcout-working.params).
+
 # moteus brushless servo #
 
 This contains full designs for the moteus brushless servo actuator,
