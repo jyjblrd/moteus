@@ -10,6 +10,12 @@ and a zero-angle AUX trigger.  See the [ArduPilot MCOUT guide](docs/guides/ardup
 for setup and operation, and the [configuration reference](docs/reference/configuration.md)
 for the new `mcout` and `servo.cyclic` parameters.
 
+A working controller configuration for this setup is in
+[`configs/moteus-mcout-working.cfg`](configs/moteus-mcout-working.cfg).
+Load it with `python3 -m moteus.moteus_tool --target 1 --restore-config
+configs/moteus-mcout-working.cfg`.  The matching ArduPilot parameters
+live in the [ArduPilot fork](https://github.com/jyjblrd/ardupilot/blob/new-features/configs/mcout-working.params).
+
 **WARNING**: This is not just a software project.  It includes designs
 for moderately high power electronics.  It has not yet burned down my
 (or anyone's that I know of) house, but there are no guarantees.
