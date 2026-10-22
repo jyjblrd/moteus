@@ -54,7 +54,7 @@ available on the SER R/T pads (RX on the "R" pad).
 ## ArduPilot configuration
 
 ```
-SERIALx_PROTOCOL = 50    # MotorControlOutput
+SERIALx_PROTOCOL = 51    # MotorControlOutput
 SERIALx_BAUD     = 921
 MCOUT_RATE       = 400
 ```
@@ -89,6 +89,10 @@ conf set mcout.throttle_max_velocity 40  # rev/s at full throttle
 conf set mcout.idle_velocity 5           # ground idle spin
 conf set mcout.cyclic_max_torque_Nm 0.8
 conf set mcout.cyclic_phase_offset 0.0
+# Optional, disabled by default (high_speed must exceed low_speed)
+# conf set mcout.cyclic_phase_low_speed 0
+# conf set mcout.cyclic_phase_high_speed 0
+# conf set mcout.cyclic_phase_high_advance 0
 conf set mcout.max_torque_Nm 2.0     # default 0 leaves the servo torqueless
 conf set mcout.timeout_s 0.1
 conf set mcout.watchdog_timeout_s 0.1
@@ -112,8 +116,17 @@ velocity = max(idle_velocity, throttle * throttle_max_velocity)
 base_Nm  = max(idle_torque_Nm, throttle * throttle_max_torque_Nm)
 cyclic_max = speed schedule, or cyclic_max_torque_Nm when disabled
 amp_Nm   = min(1, sqrt(r^2 + p^2)) * cyclic_max
-phase    = atan2(r, p) / (2*pi) + cyclic_phase_offset   [cycles]
-```
+phase    = atan2(r, p) / (2*pi) + cyclic_phase_offset
+         + clamp((abs(output_speed) - cyclic_phase_low_speed)
+                 / (cyclic_phase_high_speed - cyclic_phase_low_speed),
+                 0, 1) * cyclic_phase_high_advance   [cycles]
+\`\`\`
+
+The final phase-schedule term is included only when its configured
+endpoints and advance are finite, the measured speed is finite, and
+`0 <= low_speed < high_speed`. Otherwise the original constant phase
+offset applies. Scheduled outputs that cannot be represented as finite
+floating-point values also retain the constant offset.
 
 In the default velocity throttle mode this mirrors the bench
 scripts: the servo tracks `velocity` through the kd term
@@ -222,6 +235,18 @@ Or locally: `tools/bazel test --config=host //:host` and
   the ways to command them.
 * The throttle to torque map is affine (idle floor + linear scale);
   no thrust linearization is applied.
-* The cyclic phase is not automatically advanced with rotor speed;
-  use `mcout.cyclic_phase_offset` to compensate at your operating
-  point.
+* The controller does not measure aerodynamic phase lag or calibrate
+  itself. By default, `mcout.cyclic_phase_offset` is constant.
+  An optional **precalibrated** phase advance can be configured using
+  `mcout.cyclic_phase_low_speed`, `mcout.cyclic_phase_high_speed`,
+  and `mcout.cyclic_phase_high_advance`. With both speed endpoints in
+  output rev/s and high > low >= 0, the advance ramps linearly from
+  zero at low speed to `high_advance` cycles at high speed, then clamps.
+  If disabled or malformed, the original constant offset applies.
+  Negative speeds use their absolute value. This adjustment does not
+  compensate for transients or identify physical response automatically.
+  The phase advance is a signed **unwrapped** difference in cycles:
+  for a change from 0.49 to 0.51 cycles, configure +0.02, not -0.98.
+  Do not enable without measured phase-response calibration on a
+  properly restrained test fixture. No flight improvement or safety
+  guarantee is implied.
