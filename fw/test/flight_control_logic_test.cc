@@ -231,6 +231,78 @@ BOOST_AUTO_TEST_CASE(FlightMapCyclicSpeedSchedule) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(FlightMapPhaseSpeedAdvance) {
+  auto config = MakeConfig();
+  auto frame = MakeArmedFrame();
+  frame.pitch = 1.0f;
+  config.cyclic_phase_offset = 0.49f;
+  config.cyclic_phase_low_speed = 10.0f;
+  config.cyclic_phase_high_speed = 30.0f;
+  config.cyclic_phase_high_advance = 0.02f;
+
+  // The unwrapped phase path crosses 0.5 turns, never going via zero.
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 0.0f).cyclic_phase ==
+             0.49f, tt::tolerance(1e-5f));
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 10.0f).cyclic_phase ==
+             0.49f, tt::tolerance(1e-5f));
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 20.0f).cyclic_phase ==
+             0.50f, tt::tolerance(1e-5f));
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 30.0f).cyclic_phase ==
+             0.51f, tt::tolerance(1e-5f));
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 100.0f).cyclic_phase ==
+             0.51f, tt::tolerance(1e-5f));
+  BOOST_TEST(FlightControlLogic::Map(frame, config, -20.0f).cyclic_phase ==
+             0.50f, tt::tolerance(1e-5f));
+
+  // Negative advances work and remain bounded by the endpoints.
+  config.cyclic_phase_high_advance = -0.08f;
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 20.0f).cyclic_phase ==
+             0.45f, tt::tolerance(1e-5f));
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 90.0f).cyclic_phase ==
+             0.41f, tt::tolerance(1e-5f));
+
+  // Disabled, malformed and non-finite optional parameters all
+  // preserve the existing fixed phase; they do not enable a schedule.
+  config.cyclic_phase_high_speed = config.cyclic_phase_low_speed;
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 20.0f).cyclic_phase ==
+             0.49f, tt::tolerance(1e-5f));
+  config.cyclic_phase_high_speed = 30.0f;
+  config.cyclic_phase_low_speed = -1.0f;
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 20.0f).cyclic_phase ==
+             0.49f, tt::tolerance(1e-5f));
+  config.cyclic_phase_low_speed = 10.0f;
+  config.cyclic_phase_high_advance =
+      std::numeric_limits<float>::quiet_NaN();
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 20.0f).cyclic_phase ==
+             0.49f, tt::tolerance(1e-5f));
+  config.cyclic_phase_high_advance = 0.02f;
+  BOOST_TEST(FlightControlLogic::Map(
+      frame, config, std::numeric_limits<float>::infinity()).cyclic_phase ==
+             0.49f, tt::tolerance(1e-5f));
+  // Finite extreme endpoints must not overflow the interpolation
+  // denominator or accidentally disable the schedule.
+  config.cyclic_phase_low_speed =
+      -0.0f;
+  config.cyclic_phase_high_speed =
+      std::numeric_limits<float>::max();
+  config.cyclic_phase_high_advance = 0.125f;
+  BOOST_TEST(FlightControlLogic::Map(
+      frame, config, std::numeric_limits<float>::max()).cyclic_phase ==
+             0.615f, tt::tolerance(1e-5f));
+
+  // Overflowing the scheduled result falls back to the configured
+  // phase offset rather than passing infinity into fixed-point phase.
+  config.cyclic_phase_low_speed = 0.0f;
+  config.cyclic_phase_high_speed = 10.0f;
+  config.cyclic_phase_offset = std::numeric_limits<float>::max();
+  config.cyclic_phase_high_advance =
+      std::numeric_limits<float>::max();
+  BOOST_TEST(std::isfinite(
+      FlightControlLogic::Map(frame, config, 10.0f).cyclic_phase));
+  BOOST_TEST(FlightControlLogic::Map(frame, config, 10.0f).cyclic_phase ==
+             config.cyclic_phase_offset);
+}
+
 BOOST_AUTO_TEST_CASE(FlightMapClampsAndSanitizes) {
   const auto config = MakeConfig();
   auto frame = MakeArmedFrame();
